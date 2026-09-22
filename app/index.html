@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <!-- viewport-fit=cover：移动端安全区（安卓底部手势条） -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#2f9e44" />
+  <meta name="description" content="班主任工作台 — 正面管教成长记录 PWA。纯本地、离线可用、数据不出本机。" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="班主任" />
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+  <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png" />
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="stylesheet" href="./src/styles.css" />
+  <title>班主任工作台</title>
+</head>
+<body>
+  <div id="app" class="phone">
+    <!-- 启动加载态 -->
+    <div class="boot">班主任工作台 加载中…</div>
+  </div>
+
+  <!-- Dexie 本地化（离线可用），挂全局 Dexie -->
+  <script src="./vendor/dexie.min.js"></script>
+  <!-- 主入口（ES Module） -->
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+# 换行符统一：仓库内一律按文本处理，工作区也保持 LF
+# （Windows 上 core.autocrlf 默认会把检出文件写成 CRLF，导致每次 add 都刷一堆
+#   "LF will be replaced by CRLF" 警告；显式 eol=lf 后行为在所有平台一致）
+* text=auto eol=lf
+
+# 二进制资源明确标注，禁止 Git 做换行符转换
+*.png binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.woff binary
+*.woff2 binary
