@@ -1,11 +1,12 @@
 // 记录 Tab：① 极速记录（页面内嵌）② 统计概览 ③ 成长时间线
 // V11.1：正面管教标签体系（8 能力分类 + 关注）；关注子模块用 chip-switch；记录只存标签名 + 评语
-import { state, saveSetting } from '../state.js';
+import { state } from '../state.js';
 import {
   listStudents, listRecordsPage, addRecord, softDeleteRecord, restoreRecord,
   countActiveRecords, getRecord, putImage, getImageBlob, listImages, incTagUse, listTags
 } from '../db/semester.js';
 import { WUYU, GUANZHU, GZ_GROUPS, GZ_SUB } from '../db/seed.js';
+import { lintText, PHOTO_BAN, PHOTO_OK } from '../privacy.js';
 import {
   el, esc, toast, banner, closeBanner, openPicker, closePickers,
   actionSheet, undoBar, emptyState, bindEmpty, confirm, lightbox, syncSeg, onSeg
@@ -26,6 +27,7 @@ let libTags = [];                         // 标签库（db.tags 快照，便于
 let form = { stu: null, tags: new Set(), imgs: [], date: '' };
 let lastAuto = '';
 let editingId = null;
+let allNames = [];                        // 全班姓名（含已转出）：评语「他人姓名」实时提醒用
 
 const pad = n => String(n).padStart(2, '0');
 const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
@@ -57,6 +59,7 @@ function quickCard() {
       <label>评语</label>
       <textarea id="q-text" rows="3" placeholder="选标签自动填预设评语，可微调"></textarea>
       <div class="draft" id="q-draft"></div>
+      <div class="draft" id="q-rule"></div>
     </div>
 
     <div class="field">
@@ -70,20 +73,27 @@ function quickCard() {
     </div>
 
     <div class="field">
-      <label>图片（非必要不拍）</label>
+      <label>图片（非必要不拍 · 只拍作品不拍人）</label>
       <div class="row" style="gap:8px">
         <button class="btn ghost tiny" id="q-cam">📷 拍照</button>
         <button class="btn ghost tiny" id="q-alb">🖼️ 相册</button>
         <span class="muted" style="font-size:12px">已选 <b id="q-imgn">0</b>/${MAX_IMG} 张</span>
       </div>
+      <div class="photorule" id="q-photorule">
+        <div class="pr-hd">📸 只拍物，不拍人</div>
+        <div class="pr-row"><b>✅ 可以拍</b>${PHOTO_OK.map(x => esc(x)).join(' · ')}</div>
+        <div class="pr-row"><b>❌ 不要拍</b>${PHOTO_BAN.map(x => esc(x)).join(' · ')}</div>
+        <div class="pr-ft">入库会自动去掉拍摄位置等元信息；画面里本来就有的内容（人脸、姓名、名单）不会被自动识别，请在按下快门前就避开。</div>
+      </div>
       <input type="file" id="q-cam-in" accept="image/*" capture="environment" style="display:none">
       <input type="file" id="q-alb-in" accept="image/*" multiple style="display:none">
       <div class="imgs" id="q-imgs"></div>
+      <label class="pdok" id="q-pdok" style="display:none"><input type="checkbox" id="q-pdchk"><span>画面已确认：无学生人脸 · 无他人姓名 / 署名 · 背景没有名单、座位表、成绩表</span></label>
       <div class="draft" id="q-phototip"></div>
     </div>
 
     <button class="btn mt" id="q-save">保存</button>
-    <div class="save-note">删除或改名标签，不影响已保存的成长记录。</div>
+    <div class="save-note">删除或改名标签，不影响已保存的成长记录。评语与「图片说明」都会随记录保存；只有你自己复制的「AI 评语素材」会离开本设备，且已脱敏。</div>
   </div>`;
 }
 
@@ -182,16 +192,23 @@ function renderImgs() {
   const box = document.getElementById('q-imgs');
   if (!box) return;
   box.innerHTML = form.imgs.map((im, i) =>
-    `<div class="img-item" data-view="${i}"><img src="${im.url}" alt=""><span class="rmx" data-rm="${i}">&times;</span></div>`).join('');
+    `<div class="img-cell"><div class="img-item" data-view="${i}"><img src="${im.url}" alt=""><span class="rmx" data-rm="${i}">&times;</span></div>` +
+    `<input class="imgdesc" data-desc="${i}" value="${esc(im.desc || '')}" placeholder="这张的说明"></div>`).join('');
   const n = document.getElementById('q-imgn'); if (n) n.textContent = form.imgs.length;
+  const okBox = document.getElementById('q-pdok');
+  const chk = document.getElementById('q-pdchk');
+  if (okBox) okBox.style.display = form.imgs.length ? '' : 'none';
+  if (chk && !form.imgs.length) chk.checked = false;      // 图都删了 → 需要重新确认
   const tip = document.getElementById('q-phototip');
-  if (tip) tip.textContent = form.imgs.length >= 3 ? `已选 ${form.imgs.length} 张，建议少拍（占空间）` : '';
+  if (tip) tip.textContent = form.imgs.length
+    ? `已选 ${form.imgs.length} 张 · 入库已自动去掉拍摄位置等元信息；下面的「图片说明」会随记录保存并进入 AI 素材（照片本身不参与）${form.imgs.length >= 3 ? '；建议少拍，占内存' : ''}`
+    : '';
 }
 async function pickImages(files) {
   for (const f of Array.from(files)) {
     if (form.imgs.length >= MAX_IMG) { toast(`最多 ${MAX_IMG} 张`); break; }
     const blob = await compressImage(f);
-    form.imgs.push({ blob, url: URL.createObjectURL(blob) });
+    form.imgs.push({ blob, url: URL.createObjectURL(blob), desc: '' });
   }
   renderImgs();
 }
@@ -355,6 +372,7 @@ function recCard(r, name) {
     <div class="tl-comment">${esc(r.text || '')}</div>
     ${tags ? `<div class="tl-tags">${tags}</div>` : ''}
     ${imgs.length ? `<div class="grid ${gridClass(imgs.length)}">${imgs.map((_, i) => `<div class="ph" data-img="${i}" data-id="${esc(r.id)}">图</div>`).join('')}</div>` : ''}
+    ${(r.imgDescs || []).filter(Boolean).length ? `<div class="tl-desc">${(r.imgDescs || []).map((d, i) => d ? `图 ${i + 1}：${esc(d)}` : '').filter(Boolean).join('　')}</div>` : ''}
     <div class="tl-act" data-act="${esc(r.id)}">⋯</div>
   </div>`;
 }
@@ -408,6 +426,9 @@ function syncChips() {
 /* ================= 挂载 ================= */
 export async function mount(scrollEl) {
   revokeUrls();
+  const nmap = {};                        // 🔴 评语「他人姓名」提醒（含已转出，避免漏判）
+  (await listStudents(state.db, { includeOut: true })).forEach(s => nmap[s.id] = s.name);
+  allNames = Object.values(nmap).filter(Boolean);
   const stats = await computeStats();
   libTags = await listTags(state.db);
   if (!tagCat) tagCat = state.settings.defaultCat || WUYU[0];
@@ -442,8 +463,21 @@ export async function mount(scrollEl) {
   };
   redrawStu();
 
-  qStu.onclick = () => pickStudent(st => { form.stu = st.id; redrawStu(); saveDraft(); }, form.stu);
-  qText.oninput = saveDraft;
+  // 🔴 记录端规范（§2.12 D 源头治理）：在「写」的这一刻提醒，而不是事后打码
+  const RULE_TIP = '评语不写：真实姓名（本人或同学）· 分数 · 名次 · 家庭隐私。建议写「行为 + 影响」（如「主动帮助同学讲解，对方有明显进步」），把同学写成「同桌 / 同伴 / 小组」。';
+  const ruleEl = scrollEl.querySelector('#q-rule');
+  if (ruleEl) ruleEl.textContent = RULE_TIP;
+  const lint = () => {
+    if (!ruleEl) return;
+    const self = nmap[form.stu] || '';
+    const descs = form.imgs.map(im => im.desc || '').filter(Boolean);
+    const tips = lintText([qText.value, ...descs].join('\n'), allNames.filter(n => n !== self));
+    if (!tips.length) { ruleEl.className = 'draft'; ruleEl.textContent = RULE_TIP; return; }
+    ruleEl.className = 'draft warn';
+    ruleEl.innerHTML = tips.map(t => '⚠️ ' + esc(t.tip)).join('<br>');
+  };
+  qStu.onclick = () => pickStudent(st => { form.stu = st.id; redrawStu(); saveDraft(); lint(); }, form.stu);
+  qText.oninput = () => { saveDraft(); lint(); };
   qDate.onchange = () => {
     form.date = qDate.value || todayStr();
     const t = scrollEl.querySelector('#q-datetip');
@@ -455,6 +489,8 @@ export async function mount(scrollEl) {
   scrollEl.querySelector('#q-yest').onclick = () => { qDate.value = yesterday(); qDate.onchange(); };
 
   // 图片
+  // 🔴 V11.11：拍摄规范改为「常显在图片区」——不再弹层、不再有「首次提示」，老师一眼就能看到。
+  //    规范（拍之前就看见）+ 入库确认勾选（保存前再确认）构成两道门；照片的 EXIF 由压缩重绘天然剥掉。
   scrollEl.querySelector('#q-cam').onclick = () => scrollEl.querySelector('#q-cam-in').click();
   scrollEl.querySelector('#q-alb').onclick = () => scrollEl.querySelector('#q-alb-in').click();
   scrollEl.querySelector('#q-cam-in').onchange = e => { pickImages(e.target.files); e.target.value = ''; };
@@ -465,6 +501,12 @@ export async function mount(scrollEl) {
     const v = e.target.closest('[data-view]');
     if (v) lightbox(form.imgs.map(x => x.url), +v.dataset.view);
   };
+  // 🔴 图片说明：随打随存进 form.imgs[i].desc，并即时跑一次规范检查（说明也会进 AI 素材）
+  scrollEl.querySelector('#q-imgs').addEventListener('input', e => {
+    const d = e.target.closest('[data-desc]'); if (!d) return;
+    const im = form.imgs[+d.dataset.desc]; if (im) im.desc = d.value;
+    lint();
+  });
   renderImgs();
 
   // 标签
@@ -483,6 +525,7 @@ export async function mount(scrollEl) {
     redrawStu(); await renderTags(scrollEl);
     const tip = scrollEl.querySelector('#q-draft');
     if (tip && d.text) tip.textContent = '已恢复上次未保存的草稿';
+    lint();
   }
 
   // 保存（🔴 状态机）
@@ -492,21 +535,32 @@ export async function mount(scrollEl) {
     if (!form.stu) { toast('请先选择学生'); return; }
     const text = qText.value.trim();
     if (!text && form.tags.size === 0) { toast('评语或标签至少填一项'); return; }
+    // 🔴 照片入库确认（§2.12 C4）：画面里本来就有的内容不会被自动识别，必须由拍摄者确认
+    if (form.imgs.length && state.settings.photoGuard !== 'off') {
+      const chk = scrollEl.querySelector('#q-pdchk');
+      if (chk && !chk.checked) {
+        toast('照片还没确认合规，请先勾选');
+        const box = scrollEl.querySelector('#q-pdok');
+        if (box) box.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        return;
+      }
+    }
     saveBtn.disabled = true; saveBtn.textContent = '保存中…';
     try {
       const db = state.db;
-      const imageIds = [];
+      const imageIds = [], imgDescs = [];
       for (const im of form.imgs) {                   // 🔴 图片在学期库（随归档一起删）
         const imageId = 'img_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
         await putImage(db, imageId, im.blob);
         imageIds.push(imageId);
+        imgDescs.push((im.desc || '').trim());        // 🔴 图片说明与 imageIds 一一对齐
       }
       const rec = {
         id: 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
         studentId: form.stu,
         category: tagCat,
         tags: [...form.tags],
-        text, imageIds, templateId: null,
+        text, imageIds, imgDescs, templateId: null,
         date: qDate.value || todayStr(),
         updatedAt: Date.now(), del: 0
       };
@@ -609,6 +663,8 @@ function openEdit(r, onDone) {
               <div class="tags">${g.map(t => `<div class="tag ${tags.has(t.name) ? 'on' : ''}" data-n="${esc(t.name)}">${esc(t.name)}</div>`).join('')}</div>`;
           }).join('')}</div></div>
           <div class="field"><label>评语</label><textarea class="ta" id="e-text" rows="4">${esc(r.text || '')}</textarea></div>
+          ${(r.imageIds || []).length ? `<div class="field"><label>图片说明 <span class="muted" style="font-weight:400;font-size:11px">照片不进 AI，这段文字会</span></label>
+            ${(r.imageIds || []).map((_, i) => `<input class="imgdesc" data-edesc="${i}" value="${esc((r.imgDescs || [])[i] || '')}" placeholder="第 ${i + 1} 张的说明">`).join('')}</div>` : ''}
         </div>`,
       foot: `<button class="btn ghost" data-pclose>取消</button><button class="btn" id="e-save">保存修改</button>`
     });
@@ -623,9 +679,11 @@ function openEdit(r, onDone) {
     };
     p.foot.querySelector('#e-save').onclick = async () => {
       const cat = [...tags].map(n => libTags.find(t => t.name === n)?.category).find(Boolean) || r.category;
+      const imgDescs = (r.imageIds || []).map((_, i) => (((p.body.querySelector('[data-edesc="' + i + '"]') || {}).value) || '').trim());
       await state.db.growth_records.put({
         ...r, studentId: stu, date: p.body.querySelector('#e-date').value || r.date,
-        tags: [...tags], category: cat, text: p.body.querySelector('#e-text').value.trim(), updatedAt: Date.now()
+        tags: [...tags], category: cat, text: p.body.querySelector('#e-text').value.trim(),
+        imgDescs: imgDescs.length ? imgDescs : (r.imgDescs || []), updatedAt: Date.now()
       });
       p.close(); toast('已更新'); onDone && onDone();
     };

@@ -4,7 +4,7 @@ import {
   state, ensureCurrentSemester, loadSettings, setSemester, refresh, applyFontSize, onChange, teacherInitial,
   readPersisted, captureInstallPrompt
 } from './state.js';
-import { getSetting, setSetting, meta } from './db/meta.js';
+import { getSetting, setSetting, meta, listSemesters } from './db/meta.js';
 import { openSemester, listStudents, bulkPutStudents } from './db/semester.js';
 import { nameInitials } from './pinyin.js';
 import { el, esc, toast, banner, closeBanner, openPicker, closePickers } from './ui.js';
@@ -12,7 +12,8 @@ import { mount as mountRecord, flushDraft } from './tabs/record.js';
 import { mount as mountClass } from './tabs/class.js';
 import { mount as mountAnalysis } from './tabs/analysis.js';
 import { mount as mountData, housekeeping, quickBackup, openSettings, autoBackupMaybe, openSnapList, openImportPack } from './tabs/data.js';
-import { listSnaps } from './db/rescue.js';
+import { listSnaps, rescueError } from './db/rescue.js';
+import { classifyDbError, DB_ERR_NEWER, DB_ERR_BLOCKED, DB_ERR_CORRUPT } from './db/migrate.js';
 
 // 🔴 4 个 Tab：不做 5 个、不做汉堡菜单（拇指够不到边缘）
 const TABS = [
@@ -25,8 +26,8 @@ let activeTab = 'record';
 
 // 🔴 产品版本号（对外：页脚展示 + 更新 UI）。语义化：修 bug 升末位（v1.0.1）、
 //    加功能升中位（v1.1.0）、数据结构不兼容升首位（v2.0.0）。首个公开发布 = v1.0.0。
-//    注意：内部还有一套「方案文档版本号」（如 V11.8），只用于设计记录，不对外，见 tabs/data.js 的 PLAN_VER。
-const APP_VER = 'v1.1.0';
+//    注意：内部还有一套「方案文档版本号」（如 V11.10），只用于设计记录，不对外，见 tabs/data.js 的 PLAN_VER。
+const APP_VER = 'v1.4.0';
 // 🔴 部署网址锚点（换网址风险防护，§13.7.1）：留空 = 首次启动自动记录当前 origin 并比对；
 //    上线固定域名后建议填死，例如 'https://banzhuren.example.com'，网址变化即弹告警提醒导入备份。
 const EXPECTED_ORIGIN = '';
@@ -169,8 +170,8 @@ async function hintFor(key) {
   const HINTS = {
     record: { anchor: '#q-stu', text: '先点这里选学生，再点标签、写评语，30 秒记一条。' },
     class:  { anchor: '#cl-today', text: '课表按节次索引：改作息不会让课程错位。' },
-    analysis: { anchor: '#an-open', text: '导出实名直出、绝不联网，复制后粘贴到你自己的 AI 工具。' },
-    data:   { anchor: '#dt-backup', text: '手机会丢、系统会清，定期导出备份是唯一的保险。' }
+    analysis: { anchor: '#an-ai', text: '要发给 AI 就用「AI 评语素材」：姓名换成代号，分数、名次、具体日期与他人姓名自动隐去，照片不参与。' },
+    data:   { anchor: '#dt-backup', text: '手机会丢、系统会清，定期导出备份是唯一的保险；要给家长看的文字材料用「成长记录文本」。' },
   };
   const h = HINTS[key]; if (!h) return;
   const dismissed = (await getSetting('dismissedHints', [])) || [];
@@ -264,6 +265,7 @@ async function maybeOnboard() {
       <div class="kv" style="border:none"><span>① 数据只存这台手机</span><b>不联网、不上传</b></div>
       <div class="kv"><span>② 建议每周导出备份</span><b>手机会丢、系统会清</b></div>
       <div class="kv"><span>③ 期末归档存电脑/网盘</span><b>手机上不留旧数据</b></div>
+      <div class="kv"><span>④ 要发给 AI 的内容</span><b>走「AI 评语素材」，姓名自动换成代号</b></div>
       <div class="save-note">数据保存在本机浏览器，不会自动上传；清缓存或换设备前记得先导出备份。</div>
     </div>`,
     foot: `<button class="btn" id="ob-3">开始使用</button>`
@@ -321,6 +323,64 @@ async function applyUpdate() {
   setTimeout(() => { if (navigator.serviceWorker.controller) window.location.reload(); }, 1000);
 }
 
+/* ---------- 启动失败兜底页（绝不清空数据） ---------- */
+// 🔴 三种故障给三个出口：数据比代码新→升级；存储被禁→允许存储；真损坏→先导出再决定。
+//    三种都**不再自动删库** —— 删的是唯一正本，而删库对前两种故障根本无效。
+const BOOT_ERR = {
+  [DB_ERR_NEWER]: {
+    ic: '⬆️', tone: '#b26a00', title: '本地数据比当前代码新',
+    body: '这台设备上的数据是用<b>更新版本</b>的代码写入的，当前这份代码读不了它。<br>请升级到最新版再打开 —— <b>不要清空数据</b>。'
+  },
+  [DB_ERR_BLOCKED]: {
+    ic: '🔒', tone: '#b26a00', title: '浏览器不允许本站保存数据',
+    body: '常见于无痕 / 隐私模式，或站点数据被拦截。<br>请允许本站存储后重试 —— 这时清空数据没有意义（清完照样打不开）。'
+  },
+  [DB_ERR_CORRUPT]: {
+    ic: '⚠️', tone: 'var(--danger)', title: '本地数据读取异常',
+    body: '已尽力把还能读出来的内容抢救到本机备份。<br>请<b>先打开「数据导出页」把数据存成文件</b>，再决定是否重建。'
+  }
+};
+function renderBootError(app, e) {
+  const kind = (e && e.kind) || classifyDbError(e);
+  const m = BOOT_ERR[kind] || BOOT_ERR[DB_ERR_CORRUPT];
+  app.innerHTML = `<div class="boot" style="text-align:center;padding:32px 20px;color:${m.tone}">
+    <div style="font-size:32px;margin-bottom:12px">${m.ic}</div>
+    <div style="font-size:var(--fs-lg);font-weight:600;margin-bottom:10px">${m.title}</div>
+    <div style="color:var(--txt2);line-height:1.7">${m.body}</div>
+    <div style="color:var(--txt2);margin-top:10px;font-size:var(--fs-xs)">技术信息：${esc((e && e.message) || e)}</div>
+    <button id="boot-recover" class="btn" style="margin-top:16px">打开数据导出页</button>
+    <button id="boot-retry" class="btn" style="margin-top:10px">重试</button>
+    <button id="boot-reset" class="btn danger" style="margin-top:22px">清空本地数据并重建</button>
+    <span style="color:var(--txt2);display:block;margin-top:8px">只有在数据确实读不出时才用它：会删除本机全部内容，且不可恢复。</span>
+  </div>`;
+  document.getElementById('boot-recover').onclick = () => { location.href = './recover.html'; };
+  document.getElementById('boot-retry').onclick = () => location.reload();
+  document.getElementById('boot-reset').onclick = hardReset;
+}
+
+// 🔴 全机唯一的删库入口：必须「显式点击 + 二次确认（确认框 + 手动输入）」——不能一点就没
+async function hardReset() {
+  if (!confirm('清空本机数据会删除全部学生与成长记录，且无法恢复。\n\n请先确认：已导出备份，或用「数据导出页」把数据存成文件。\n\n仍要清空吗？')) return;
+  const typed = prompt('这是最后一步：请输入「清空」两个字确认。');
+  if (((typed || '').trim()) !== '清空') { alert('输入不匹配，已取消。'); return; }
+  try {
+    const DX = window.Dexie;
+    for (const n of await appDbNames()) { try { await DX.delete(n); } catch (_) {} }
+    location.reload();
+  } catch (err) { alert('清空失败：' + ((err && err.message) || err)); }
+}
+// 🔴 库名必须枚举全：只删 bzr_meta 会把学期库留成「看不见但占空间」的孤儿库
+//    （meta 打不开时 listSemesters 读不到学期 id，所以再补一层浏览器自己的库列表）
+async function appDbNames() {
+  const out = new Set(['bzr_meta', 'bzr_rescue']);
+  try { (await listSemesters()).forEach(s => { if (s && s.id) out.add('bzr_' + s.id); }); } catch (_) {}
+  try {
+    const ds = indexedDB.databases ? await indexedDB.databases() : [];
+    (ds || []).forEach(d => { const n = d && d.name; if (n && n.startsWith('bzr_')) out.add(n); });
+  } catch (_) {}
+  return [...out];
+}
+
 /* ---------- 启动 ---------- */
 async function boot() {
   const app = document.getElementById('app');
@@ -361,28 +421,17 @@ async function boot() {
         if (chip) chip.onclick = () => openSnapList('抢救数据', rescues, 'no');
       }
     } catch (_) {}
+    // 🔴 备份库打不开时静默降级了（不再删库重建）：必须提醒老师手动导出，别以为"一直在备份"
+    try {
+      const re = rescueError();
+      if (re) banner('rescueBrokenBanner', `⚠️ 本机自动备份暂时不可用（${esc(re.name || '存储异常')}），<b>请到「数据 → 备份与恢复」手动导出</b>一份。`, 'warn');
+    } catch (_) {}
     // 🔴 定时 + 切回前台 自动快照（最小间隔 6h，在 autoBackupMaybe 内节流）
     setInterval(() => autoBackupMaybe(), 15 * 60 * 1000);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) autoBackupMaybe(); });
   } catch (e) {
-    // 🔴 db.open() 失败 → 兜底页（绝白屏），并提供「重置」逃生通道
-    const Dexie = window.Dexie;
-    app.innerHTML = `<div class="boot" style="color:var(--danger);text-align:center;padding:32px">
-      <div style="font-size:32px;margin-bottom:12px">⚠️</div>
-      数据库打开失败：${esc(e.message || e)}<br><br>
-      <span style="color:var(--txt2)">可能是本地数据损坏，或浏览器禁用了本站存储。</span><br>
-      <button id="boot-reset" class="btn danger" style="margin-top:14px">清空本地数据并重建</button>
-      <span style="color:var(--txt2);display:block;margin-top:8px">重置会清空本机全部数据（不影响你已导出的备份文件），然后自动刷新。</span>
-    </div>`;
-    document.getElementById('boot-reset').onclick = async () => {
-      try {
-        await Dexie.delete('bzr_meta');
-        const { listSemesters } = await import('./db/meta.js');
-        const sems = await listSemesters().catch(() => []);
-        for (const s of sems) await Dexie.delete('bzr_' + s.id);
-        location.reload();
-      } catch (err) { alert('重置失败：' + (err && err.message || err)); }
-    };
+    // 🔴 启动失败兜底页（绝白屏）：按故障类型给不同出口，**绝不自动清空数据**（§13.25）
+    renderBootError(app, e);
     return;
   }
   // 🔴 预览参数：?newversion=1 强制弹出更新窗，便于本地验证更新 UI（§4.3）

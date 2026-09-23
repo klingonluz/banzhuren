@@ -4,6 +4,7 @@
 const Dexie = window.Dexie;
 
 let rescue = null;
+let rescueErr = null;   // 备份库打开失败的原因（正常时 null），见 rescueError()
 function makeRescue() {
   const db = new Dexie('bzr_rescue');
   db.version(1).stores({ snaps: 'key' });   // key: 'auto:<semId>:<ts>' | 'rescue:<dbName>:<ts>'
@@ -14,33 +15,40 @@ export function openRescue() {
   rescue = makeRescue();
   return rescue;
 }
-// 打开 rescue 库自身也做"败则删库重建"（rescue 结构简单，丢了只是少几份备份，不影响业务）
+// 打开 rescue 库：**绝不删库**。它打不开时整体降级 —— 本次不做本机备份，业务库与主流程照常，
+// 并把原因留在 rescueError() 里，由启动横幅提醒老师「手动导出备份」（备份库自己就是保险箱，删了才是真丢）。
 async function ensureRescue() {
   const r = openRescue();
-  try { await r.open(); }
+  try { await r.open(); rescueErr = null; return r; }
   catch (e) {
     try { r.close(); } catch (_) {}
-    try { await Dexie.delete('bzr_rescue'); } catch (_) {}
-    rescue = makeRescue(); await rescue.open();
+    rescueErr = e;
+    rescue = null;                   // 下次用全新实例重试（绝不在失败实例上重复 open）
+    return null;
   }
-  return rescue;
 }
+// 最近一次备份库打开失败的原因（正常时 null）
+export function rescueError() { return rescueErr; }
 
 // ---- 写入 / 读取 ----
+// 🔴 备份库不可用时一律「静默降级」：返回 false / null / []，绝不抛错打断老师正在做的事
 export async function putSnap(rec) {
   const r = await ensureRescue();
-  await r.snaps.put(rec);
+  if (!r) return false;
+  try { await r.snaps.put(rec); return true; } catch (_) { return false; }
 }
 export async function getSnap(key) {
   const r = await ensureRescue();
+  if (!r) return null;
   return await r.snaps.get(key);
 }
 export async function deleteSnap(key) {
   const r = await ensureRescue();
-  await r.snaps.delete(key);
+  if (r) await r.snaps.delete(key);
 }
 export async function listSnaps(type) {
   const r = await ensureRescue();
+  if (!r) return [];
   const all = await r.snaps.toArray();
   return (type ? all.filter(s => s.type === type) : all)
     .sort((a, b) => b.exportedAt - a.exportedAt);
@@ -48,13 +56,14 @@ export async function listSnaps(type) {
 // 自动快照滚动保留：每个学期只留最近 keep 份（默认 3）
 export async function pruneAuto(semesterId, keep = 3) {
   const r = await ensureRescue();
+  if (!r) return;
   const mine = (await r.snaps.where('key').startsWith('auto:' + semesterId + ':').toArray())
     .sort((a, b) => b.exportedAt - a.exportedAt);
   const drop = mine.slice(keep);
   for (const d of drop) { try { await r.snaps.delete(d.key); } catch (_) {} }
 }
 
-// 🔴 损坏抢救：业务库 open() 抛错后、delete 之前，尽最大努力用原生 IDB 把还能读出的 store dump 进 rescue。
+// 🔴 损坏抢救：业务库 open() 抛错后（**不再有 delete 这一步**），尽最大努力用原生 IDB 把还能读出的 store dump 进 rescue。
 //    best-effort：任一环节失败就跳过，绝不让抢救本身卡住"必须重建以解锁 app"的主流程。
 export async function rescueFromCorrupt(dbName, label) {
   if (!(await Dexie.exists(dbName))) return false;
@@ -81,7 +90,6 @@ export async function rescueFromCorrupt(dbName, label) {
     if (!Object.keys(out.stores).length) return false;
     out.key = 'rescue:' + dbName + ':' + Date.now();
     out.semesterName = label || dbName;
-    await putSnap(out);
-    return true;
+    return await putSnap(out);      // 备份库不可用时返回 false（不强求抢救成功）
   } catch (_) { return false; }
 }

@@ -1,6 +1,7 @@
 // 学期库（每学期一个独立 IndexedDB 数据库）
 // V11.1 数据层：图片移入学期库；新增 categories / templates / collections；tasks → collections
 const Dexie = window.Dexie;
+import { classifyDbError, DB_ERR_CORRUPT, DbOpenError, migrateQuietly } from './migrate.js';
 
 const cache = new Map();
 
@@ -39,18 +40,20 @@ export function openSemester(semesterId) {
 }
 
 // 🔴 打开学期库：v1→v2 由 Dexie 自动升级（保留学生/记录，仅增删 store）；
-// 若旧库损坏导致 open() 抛错，则【先抢救可读数据到 bzr_rescue，再】删库后用【全新实例】重建并触发种子。返回已打开的好实例。
+// 打开失败**绝不删库**，只按错误类型分流后抛 DbOpenError（详见 meta.js / migrate.js 的说明）。
+// 打开成功后跑一次「补齐新键」：旧记录缺 pinyin / del / tags 等新键时写默认值。
 export async function ensureOpen(db, semesterId) {
   try {
     await db.open();
   } catch (e) {
     try { db.close(); } catch (_) {}
-    try { const { rescueFromCorrupt } = await import('./rescue.js'); await rescueFromCorrupt('bzr_' + semesterId, semesterId); } catch (_) {}
-    try { await Dexie.delete('bzr_' + semesterId); } catch (_) {}
-    db = buildDb(semesterId);                       // 全新实例，避免 SchemaDiff
-    cache.set(semesterId, db);
-    await db.open();
+    const kind = classifyDbError(e);
+    if (kind === DB_ERR_CORRUPT) {
+      try { const { rescueFromCorrupt } = await import('./rescue.js'); await rescueFromCorrupt('bzr_' + semesterId, semesterId); } catch (_) {}
+    }
+    throw new DbOpenError('bzr_' + semesterId, kind, e);
   }
+  await migrateQuietly(db, 'semester');   // 旧记录缺新键 → 补默认值（幂等）
   return db;
 }
 

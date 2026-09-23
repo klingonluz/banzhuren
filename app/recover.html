@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>数据导出（应急） · 班主任工作台</title>
+<!--
+  🔴 数据绝对可读的出口（§13.25 数据安全 P0）
+  设计约束：**只用原生浏览器 API**，绝不依赖 index.html / src 下的应用脚本 / 第三方库 / 外部样式表 ——
+  因为会走到这个页面，往往正是主程序打不开的时候（代码坏了、模块图挂了、依赖库坏了）。
+  只做三件事：列出本机 bzr_* 库 → 逐表读出 → 打包成 JSON 让老师存下来。全程只读，不写、不删。
+-->
+<style>
+  :root{color-scheme:light}
+  *{box-sizing:border-box}
+  body{margin:0;padding:20px 16px 48px;background:#f6f7f9;color:#1c1e21;
+       font:15px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  main{max-width:680px;margin:0 auto}
+  h1{font-size:20px;margin:0 0 6px}
+  .sub{color:#606770;margin:0 0 16px}
+  .card{background:#fff;border:1px solid #dcdfe4;border-radius:10px;padding:14px;margin:12px 0}
+  .card h2{font-size:16px;margin:0 0 6px;word-break:break-all}
+  .meta{color:#606770;font-size:13px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin:8px 0 4px}
+  td{padding:3px 0;border-bottom:1px dashed #eceef1;word-break:break-all}
+  td.n{width:72px;text-align:right;color:#606770}
+  button{border:0;border-radius:8px;padding:9px 14px;font-size:14px;background:#1c6cf5;color:#fff;cursor:pointer}
+  button.ghost{background:#eef2f8;color:#1c4d8f}
+  .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;align-items:center}
+  .warn{background:#fff7e6;border:1px solid #ffd591;border-radius:10px;padding:12px;margin:12px 0;font-size:14px}
+  .err{color:#c0392b}
+  label{display:flex;align-items:center;gap:8px;font-size:14px}
+  #log{white-space:pre-wrap;font-size:12px;color:#606770;margin-top:12px;min-height:1em}
+</style>
+</head>
+<body>
+<main>
+  <h1>数据导出（应急）</h1>
+  <p class="sub">这个页面不依赖应用代码，只读取本机数据并打包成文件。<b>不会修改、不会删除任何内容。</b></p>
+
+  <div class="warn">
+    数据仍然打不开时，请先用下面的按钮把内容存成文件（存到手机文件或发给自己），
+    <b>再</b>回到应用里考虑重建。一键导出的文件含图片，体积可能较大，请耐心等进度提示。
+  </div>
+
+  <div class="row">
+    <label><input type="checkbox" id="withimg"> 连图片一起导出（体积大、较慢；不勾则只记图片元信息）</label>
+  </div>
+  <div class="row">
+    <button id="all" class="ghost">把全部库导出成一个文件</button>
+    <button id="again" class="ghost">重新扫描</button>
+  </div>
+
+  <div id="list">正在扫描本机数据…</div>
+  <pre id="log"></pre>
+</main>
+
+<script>
+(function () {
+  'use strict';
+  var KNOWN = ['bzr_meta', 'bzr_rescue'];
+  var $ = function (id) { return document.getElementById(id); };
+  var logEl = $('log');
+  function log(s) { logEl.textContent += s + '\n'; }
+
+  /* ---------- 打开一个「已经存在」的库（绝不新建） ---------- */
+  // indexedDB.open(name) 在库不存在时会**新建**一个空库；这里用 oldVersion===0 识别出来并马上删掉，
+  // 只删我们自己刚建的这个空库，绝不碰任何真实数据。
+  function openExisting(name) {
+    return new Promise(function (resolve) {
+      var req;
+      try { req = indexedDB.open(name); } catch (e) { return resolve({ error: e }); }
+      var created = false;
+      req.onupgradeneeded = function (ev) { if (ev.oldVersion === 0) created = true; };
+      req.onblocked = function () { resolve({ error: new Error('被另一个标签页占用，请关掉其它页面后重试') }); };
+      req.onerror = function () { resolve({ error: req.error || new Error('打开失败') }); };
+      req.onsuccess = function () {
+        var db = req.result;
+        if (created) { try { db.close(); } catch (e) {} try { indexedDB.deleteDatabase(name); } catch (e) {} return resolve({ missing: true }); }
+        resolve({ db: db });
+      };
+    });
+  }
+
+  function readAll(db, store) {
+    return new Promise(function (resolve, reject) {
+      var rows = [], tx;
+      try { tx = db.transaction(store, 'readonly'); } catch (e) { return reject(e); }
+      var rq = tx.objectStore(store).openCursor();
+      rq.onsuccess = function () { var c = rq.result; if (c) { rows.push(c.value); c.continue(); } };
+      rq.onerror = function () { reject(rq.error || new Error('读取失败')); };
+      tx.oncomplete = function () { resolve(rows); };
+      tx.onerror = function () { reject(tx.error || new Error('读取失败')); };
+      tx.onabort = function () { reject(tx.error || new Error('读取被中断')); };
+    });
+  }
+
+  function blobToDataURL(b) {
+    return new Promise(function (resolve, reject) {
+      var fr = new FileReader();
+      fr.onload = function () { resolve(fr.result); };
+      fr.onerror = function () { reject(fr.error); };
+      fr.readAsDataURL(b);
+    });
+  }
+  // 图片（Blob）转成可写进 JSON 的形式：不勾选只留元信息，勾选了转 dataURL
+  async function jsonable(v, withImg) {
+    if (v === null || v === undefined) return v;
+    if (typeof Blob !== 'undefined' && v instanceof Blob) {
+      var base = { __blob: true, type: v.type, size: v.size };
+      if (!withImg) { base.note = '未导出图片内容（勾选「连图片一起导出」可包含）'; return base; }
+      try { base.data = await blobToDataURL(v); } catch (e) { base.note = '图片读取失败'; }
+      return base;
+    }
+    if (Array.isArray(v)) { var a = []; for (var i = 0; i < v.length; i++) a.push(await jsonable(v[i], withImg)); return a; }
+    if (typeof v === 'object') { var o = {}; for (var k in v) { if (Object.prototype.hasOwnProperty.call(v, k)) o[k] = await jsonable(v[k], withImg); } return o; }
+    return v;
+  }
+
+  /* ---------- 找出本机有哪些 bzr_* 库 ---------- */
+  async function listNames() {
+    var set = {}, out = [];
+    function add(n) { if (n && /^bzr_/.test(n) && !set[n]) { set[n] = 1; out.push(n); } }
+    if (indexedDB.databases) {
+      try { (await indexedDB.databases() || []).forEach(function (d) { add(d && d.name); }); } catch (e) {}
+    }
+    KNOWN.forEach(add);
+    // 兜底：从 meta 的 semesters 表里读出学期 id（有些浏览器没有 indexedDB.databases）
+    var m = await openExisting('bzr_meta');
+    if (m.db) {
+      try {
+        var rows = await readAll(m.db, 'semesters');
+        rows.forEach(function (s) { if (s && s.id) add('bzr_' + s.id); });
+      } catch (e) {}
+      try { m.db.close(); } catch (e) {}
+    }
+    return out.sort();
+  }
+
+  async function dumpDb(name, withImg) {
+    var o = await openExisting(name);
+    if (o.missing) return null;
+    if (!o.db) throw (o.error || new Error('打不开'));
+    var db = o.db, names = Array.prototype.slice.call(db.objectStoreNames), stores = {}, counts = {};
+    for (var i = 0; i < names.length; i++) {
+      var sn = names[i];
+      try {
+        var rows = await jsonable(await readAll(db, sn), withImg);
+        stores[sn] = rows; counts[sn] = rows.length;
+      } catch (e) { stores[sn] = []; counts[sn] = '读取失败'; }
+    }
+    var ver = db.version;
+    try { db.close(); } catch (e) {}
+    return { name: name, version: ver, exportedAt: Date.now(), counts: counts, stores: stores };
+  }
+
+  function download(filename, obj) {
+    var url = URL.createObjectURL(new Blob([JSON.stringify(obj)], { type: 'application/json' }));
+    var a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
+  }
+
+  function stamp() {
+    var d = new Date(), p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + '_' + p(d.getHours()) + p(d.getMinutes());
+  }
+
+  function stem(name) {
+    if (name === 'bzr_meta') return '全局设置与学期';
+    if (name === 'bzr_rescue') return '本机自动备份';
+    return name.replace(/^bzr_/, '学期_');
+  }
+
+  async function exportOne(name, btn) {
+    var withImg = $('withimg').checked;
+    if (btn) { btn.disabled = true; btn.textContent = '导出中…'; }
+    try {
+      log('开始读取 ' + name + (withImg ? '（含图片）' : '') + ' …');
+      var data = await dumpDb(name, withImg);
+      if (!data) { log('· ' + name + '：不存在，跳过'); }
+      else { download('班主任工作台_' + stem(name) + '_应急导出_' + stamp() + '.json', data); log('· ' + name + '：已导出'); }
+    } catch (e) { log('· ' + name + '：读取失败 —— ' + (e && e.message || e)); }
+    if (btn) { btn.disabled = false; btn.textContent = '导出这个库'; }
+  }
+
+  async function scan() {
+    var listEl = $('list');
+    listEl.textContent = '正在扫描本机数据…';
+    logEl.textContent = '';
+    var names;
+    try { names = await listNames(); } catch (e) { names = KNOWN; }
+    var cards = [];
+    for (var i = 0; i < names.length; i++) {
+      var name = names[i], o = await openExisting(name);
+      if (!o.db) { cards.push({ name: name, error: o.missing ? '未找到' : ((o.error && o.error.message) || '打不开') }); continue; }
+      var counts = {};
+      Array.prototype.slice.call(o.db.objectStoreNames).forEach(function (sn) { counts[sn] = '—'; });
+      var ver = o.db.version;
+      try { o.db.close(); } catch (e) {}
+      cards.push({ name: name, version: ver, counts: counts });
+    }
+    if (!cards.length) { listEl.innerHTML = '<div class="card">没有找到本机数据（可能已被浏览器清除）。</div>'; return; }
+    listEl.innerHTML = '';
+    cards.forEach(function (c) {
+      var div = document.createElement('div');
+      div.className = 'card';
+      var rows = Object.keys(c.counts || {}).map(function (k) {
+        return '<tr><td>' + k + '</td><td class="n">' + c.counts[k] + '</td></tr>';
+      }).join('');
+      div.innerHTML = '<h2>' + c.name + '</h2>' +
+        '<div class="meta">' + (c.error ? '<span class="err">' + c.error + '</span>'
+          : '结构版本 v' + c.version + ' · 表：' + Object.keys(c.counts).length + ' 个') + '</div>' +
+        (rows ? '<table>' + rows + '</table>' : '') +
+        '<div class="row"></div>';
+      var btn = document.createElement('button');
+      btn.textContent = '导出这个库';
+      btn.onclick = function () { exportOne(c.name, btn); };
+      div.querySelector('.row').appendChild(btn);
+      listEl.appendChild(div);
+    });
+    log('扫描完成：共 ' + cards.length + ' 个库。');
+  }
+
+  $('all').onclick = async function () {
+    var withImg = $('withimg').checked, all = {};
+    var names = await listNames();
+    for (var i = 0; i < names.length; i++) {
+      var d = await dumpDb(names[i], withImg).catch(function (e) { log('· ' + names[i] + '：' + (e && e.message || e)); return null; });
+      if (d) all[names[i]] = d;
+    }
+    download('班主任工作台_全机应急导出_' + stamp() + '.json', { app: '班主任工作台', kind: 'recover-all', exportedAt: Date.now(), dbs: all });
+    log('已导出 ' + Object.keys(all).length + ' 个库。');
+  };
+  $('again').onclick = scan;
+
+  scan();
+})();
+</script>
+</body>
+</html>

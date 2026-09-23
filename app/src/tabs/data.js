@@ -1,5 +1,6 @@
-// 数据 Tab：管理端（名单 / 标签库 / 分类）/ 学期管理 / 备份与恢复 / 归档档案柜 / 回收站 / 设置
+// 数据 Tab：管理端（名单 / 标签库 / 分类）/ 学期管理 / 备份与恢复 / 成长记录文本（实名导出）/ 归档档案柜 / 回收站 / 设置
 // V11.1：分类与标签全部可编辑；导入逐条校验；图片在学期库；collections 为临时态不进备份
+// V11.11：成长记录文本（实名）从「分析」页迁到这里，与备份并列 —— 备份可导入恢复，文本只给人看
 import {
   state, saveSetting, setSemester, refresh, teacherInitial, effectiveDeviceName,
   persistSupported, requestPersist, canInstall, promptInstall
@@ -12,6 +13,8 @@ import {
   putImage, listImages, deleteImage, dataURLToBlob, orphanImages
 } from '../db/semester.js';
 import { nameInitials } from '../pinyin.js';
+import { PHOTO_BAN, PHOTO_OK } from '../privacy.js';
+import { openExport } from '../export.js';
 import {
   getSetting, setSetting, listSemesters, putSemester, ensureSemester, meta
 } from '../db/meta.js';
@@ -21,8 +24,8 @@ import { el, esc, toast, openPicker, closePickers, emptyState, bindEmpty, confir
 
 const GRACE_DAYS = 7;                     // 归档宽限（§5.5）
 const SCHEMA_VERSION = 6;                 // 当前 schema 版本（V11.1）
-const APP_VER = 'v1.1.0';                 // 🔴 产品版本号（对外）：语义化递增，与 main.js 的 APP_VER 保持一致
-const PLAN_VER = 'V11.8';                 // 🔴 方案版本号（内部，仅设置页可见）：与 dev/docs 里配对的方案文件同步，改功能才顺延
+const APP_VER = 'v1.4.0';                 // 🔴 产品版本号（对外）：语义化递增，与 main.js 的 APP_VER 保持一致
+const PLAN_VER = 'V11.12';                // 🔴 方案版本号（内部，仅设置页可见）：与 dev/docs 里配对的方案文件同步，改功能才顺延
 const pad = n => String(n).padStart(2, '0');
 
 function blobToDataURL(blob) {
@@ -213,6 +216,7 @@ export async function mount(scrollEl) {
     ${manageCard(students.length, cats.length, tags.length)}
     ${semesterCard(sto)}
     ${backupCard()}
+    ${textCard()}
     ${await autoCard()}
     ${cabinetCard(archived)}
     ${trashCard(deleted.length, students)}
@@ -249,6 +253,7 @@ export async function mount(scrollEl) {
     const ss = await listSnaps('rescue').catch(() => []);
     openSnapList('抢救数据', ss, 'no');
   };
+  scrollEl.querySelector('#dt-text').onclick = () => openExport();
   scrollEl.querySelector('#dt-import').onclick = () => openImport();
   scrollEl.querySelector('#dt-trash').onclick = () => openTrash();
   scrollEl.querySelector('#dt-settings').onclick = () => openSettings();
@@ -290,7 +295,16 @@ function backupCard() {
     <button class="btn" id="dt-backup">导出备份（全量含图）</button>
     <button class="btn ghost mt" id="dt-import">导入备份（逐条裁决）</button>
     <div class="save-note" id="dt-last"></div>
+    <div class="save-note">这是<b>数据备份</b>（JSON，含图片，可原样导入恢复），不是给家长看的成长记录文本 —— 后者在下面「📄 成长记录文本」。</div>
+    <div class="save-note">🛡️ <b>万一哪天打不开</b>：先别清数据。打开<a href="./recover.html">数据导出页</a> —— 它不依赖应用代码，能把本机内容直接存成文件（含图片），存好之后再考虑是否重建。</div>
     <div class="save-note danger"><b>换网址 = 数据全丢</b>：本机所有数据存在浏览器里、绑定当前网址（域名+协议+端口）。一旦更换网址（换域名 / http 改 https / 改端口 / 重新发布拿到新地址），旧网址下的全部历史数据将无法读取、彻底消失。本机自动快照与抢救库也在同一网址下，<b>同样救不回</b>。因此「导出备份」是<b>唯一能跨网址带走数据</b>的方式——<b>每次部署新网址前，务必先在此导出一份 JSON 存好，再到新网址导入</b>。</div>
+  </div>`;
+}
+function textCard() {
+  return `<div class="card">
+    <h2>📄 成长记录文本 <span class="muted" style="font-weight:400;font-size:12px">（实名 · 留本机）</span></h2>
+    <button class="btn" id="dt-text">生成成长记录文本</button>
+    <div class="save-note">给人看的文字材料：一份<b>实名</b>的成长记录，可打印、给家长、存档；<b>不含照片本身</b>、不含成绩。和上面的备份是两回事 —— 备份是机器可读、可导入恢复的 JSON，这份是纯文本，只读不回填。要发给 AI 请用「分析 → AI 评语素材」。</div>
   </div>`;
 }
 function cabinetCard(archived) {
@@ -898,6 +912,23 @@ function openTrash() {
 }
 
 /* ---------- 设置页（七组 + 极速记录默认分类，§4.8.18） ---------- */
+// 🔴 可拍 / 不可拍清单：与记录页共用同一份常量，文案不会漂移
+function showPhotoRule() {
+  openPicker({
+    title: '拍摄规范（只拍物，不拍人）',
+    lead: '照片一旦拍进来就留在本机，也可能被你不小心转发出去。',
+    body: `<div style="padding:14px 16px">
+      <div class="sec" style="margin-top:0">✅ 可以拍</div>
+      <div class="save-note" style="border:none">${PHOTO_OK.map(x => '· ' + esc(x)).join('<br>')}</div>
+      <div class="sec">❌ 不要拍</div>
+      <div class="save-note" style="border:none">${PHOTO_BAN.map(x => '· ' + esc(x)).join('<br>')}</div>
+      <div class="save-note">💡 <b>主体合规不等于照片合规</b>：作业拍得好，但背景里有座位表、或角落露出别人的姓名，同样不能外发。拍之前先看一眼取景框。</div>
+      <div class="save-note">需要让 AI 了解画面内容时，用一句文字转述即可（如「手抄报排版工整、配色协调」），不必把照片发出去。</div>
+    </div>`,
+    foot: `<button class="btn" data-pclose>知道了</button>`
+  });
+}
+
 export async function openSettings() {
   const db = state.db;
   const sched = await getSchedule(db);
@@ -975,6 +1006,27 @@ export async function openSettings() {
         <button class="mini" id="st-clean" style="width:100%">清理多余图片</button>
       </div>
 
+      <div class="sec">🛡️ 隐私与合规</div>
+      <div class="set-item">
+        <div class="si-lb"><span>照片入库必须确认</span><em>勾选「画面已确认」后才能保存带图记录</em></div>
+        <div class="seg sm" id="st-pguard"><button data-v="on">开（推荐）</button><button data-v="off">关</button></div>
+        <div class="save-note" style="border:none;padding-top:6px">照片入库时会自动去掉拍摄位置等元信息（EXIF）；但画面里本来就有的人脸、姓名、名单不会被自动识别，所以要你亲眼确认一次。</div>
+      </div>
+      <div class="set-item">
+        <div class="si-lb"><span>AI 素材日期精度</span><em>外发给 AI 时日期保留到什么程度</em></div>
+        <div class="seg sm" id="st-aidate"><button data-v="month">只到月</button><button data-v="full">保留完整</button></div>
+        <div class="save-note" style="border:none;padding-top:6px">精确到某天 + 具体事件，容易定位到具体学生。默认只到月，够 AI 判断先后顺序。</div>
+      </div>
+      <div class="set-item">
+        <div class="kv" style="border:none;padding:0 0 6px"><span>拍摄规范</span><b>只拍物、不拍人</b></div>
+        <button class="mini" id="st-photorule" style="width:100%">查看可拍 / 不可拍清单</button>
+      </div>
+      <div class="set-item">
+        <div class="kv" style="border:none;padding:0 0 6px"><span>会离开本设备的</span><b>只有你自己复制的 AI 素材</b></div>
+        <div class="save-note" style="border:none">学生与记录只存在这台设备里，应用不联网、不上传。<b>AI 评语素材</b>是唯一的外发通道：姓名换成一次性代号，分数、名次、具体日期与他人姓名都会被隐去，照片一张都不参与。</div>
+      </div>
+      <div class="save-note">未满 14 周岁学生的信息属《个人信息保护法》第 28 条中的<b>敏感个人信息</b>，教师不能代替学生对外授权；是否外发、发给谁，请你按学校要求与自己的判断决定。</div>
+
       <div class="sec">📱 学期与存储</div>
       <div class="kv"><span>当前学期</span><b>${esc(state.semester?.name || '—')}</b></div>
       <div class="kv"><span>存储持久化</span><span class="pill ${S.persisted ? 'yes' : 'no'}" id="st-persist">${S.persisted ? '已授权' : '未授权'}</span></div>
@@ -988,6 +1040,7 @@ export async function openSettings() {
       <div class="sec">ℹ️ 关于</div>
       <div class="kv"><span>版本 / Build</span><b>${APP_VER}</b></div>
       <div class="kv"><span>方案版本</span><b>${PLAN_VER} · 正面管教版</b></div>
+      <div class="kv"><span>隐私模式</span><b>本机离线 · 数据不出设备</b></div>
       <div class="kv"><span>Origin</span><b style="word-break:break-all">${esc(window.location?.origin || '—')}</b></div>
       <button class="btn ghost mt" id="st-clear">🔄 刷新到最新版（不触业务数据）</button>
       <div class="save-note" style="margin-top:8px">手机上不像电脑能按「强制刷新」。更新了应用却没看到新功能时，点上面这个按钮即可——它会清掉本地缓存、注销旧版离线脚本、再重新加载页面。<b>已保存的名单与记录不受影响。</b></div>
@@ -1005,6 +1058,8 @@ export async function openSettings() {
   syncSeg(p.body.querySelector('#st-remind'), S.remind || 'weekly');
   syncSeg(p.body.querySelector('#st-keep'), String(S.recycleDays || 30));
   syncSeg(p.body.querySelector('#st-weeksplit'), S.classWeekSplit || 'off');
+  syncSeg(p.body.querySelector('#st-pguard'), S.photoGuard === 'off' ? 'off' : 'on');
+  syncSeg(p.body.querySelector('#st-aidate'), S.aiDateGrain === 'full' ? 'full' : 'month');
 
   const fsHint = { std: '标准 · 正文 15px', big: '大 · 正文 17px', huge: '超大 · 正文 19px' };
   p.body.querySelector('#st-fs-hint').textContent = fsHint[S.fontSize || 'std'];
@@ -1020,6 +1075,10 @@ export async function openSettings() {
   onSeg(p.body.querySelector('#st-remind'), v => { saveSetting('remind', v); });
   onSeg(p.body.querySelector('#st-keep'), v => { saveSetting('recycleDays', +v); });
   onSeg(p.body.querySelector('#st-weeksplit'), v => { saveSetting('classWeekSplit', v); });
+  onSeg(p.body.querySelector('#st-pguard'), v => { saveSetting('photoGuard', v); });
+  onSeg(p.body.querySelector('#st-aidate'), v => { saveSetting('aiDateGrain', v); });
+  const sPhotoRule = p.body.querySelector('#st-photorule');
+  if (sPhotoRule) sPhotoRule.onclick = () => showPhotoRule();
   // 🔴 教师姓名 ⇄ 头像 ⇄ 设备名 联动：改名即时预览头像；设备名始终自动派生（不开放手填）
   const tname = p.body.querySelector('#st-tname');
   const ava = p.body.querySelector('#st-ava');

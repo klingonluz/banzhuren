@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SW = path.join(ROOT, 'app', 'sw.js');
-const TEST_FILES = ['check3.mjs', 'check14.mjs', 'check16.mjs'];
+const TEST_FILES = ['check3.mjs', 'check14.mjs', 'check16.mjs', 'check18.mjs'];
 const RE = /bzr-v(\d+)/g;
 
 // 测试目录探测顺序：环境变量 BZR_TESTS → 仓库同级 dev/tests → 仓库内 tests
