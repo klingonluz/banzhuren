@@ -144,7 +144,8 @@ export function bindEmpty(root, handler) {
 export function confirm({ title, msg, okText = '确定', danger = false, onOk }) {
   const s = showSheet({
     title, closable: true,
-    body: `<p class="muted">${esc(msg)}</p>`,
+    // 🔴 pre-line：确认文案里的换行要保留；msg 一律走 esc（不解析 HTML，避免注入）
+    body: `<p class="muted" style="white-space:pre-line">${esc(msg)}</p>`,
     foot: `<button class="btn ghost" data-close>取消</button>
            <button class="btn ${danger ? 'danger' : ''}" id="cfm-ok">${esc(okText)}</button>`
   });

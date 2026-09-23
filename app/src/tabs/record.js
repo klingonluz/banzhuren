@@ -35,7 +35,12 @@ const ymPrefix = () => todayStr().slice(0, 8);
 const draftKey = () => 'bzr_draft_' + (state.currentSemesterId || 'x');
 const catColor = c => c === GUANZHU ? 'var(--danger)' : 'var(--primary-d)';
 
-function revokeUrls() { objUrls.forEach(u => URL.revokeObjectURL(u)); objUrls = []; }
+// 🔴 回收时跳过仍在「待保存图片」里的 URL —— 否则切 Tab 回来预览会变空白（见 P1-4）
+function revokeUrls() {
+  const keep = new Set(form.imgs.map(i => i.url));
+  objUrls.forEach(u => { if (!keep.has(u)) URL.revokeObjectURL(u); });
+  objUrls = [...keep];
+}
 function objUrl(blob) { const u = URL.createObjectURL(blob); objUrls.push(u); return u; }
 
 /* ================= ① 极速记录 ================= */
@@ -156,7 +161,11 @@ function saveDraft() {
 }
 function clearDraft() { try { localStorage.removeItem(draftKey()); } catch {} const t = document.getElementById('q-draft'); if (t) t.textContent = ''; }
 // 🔴 更新前 flush 草稿（§4.3）：立即更新会 reload，先确保未保存内容落 localStorage
-export function flushDraft() { try { saveDraft(); } catch {} }
+// 🔴 记录页未挂载时直接返回：否则 saveDraft 会把不存在的 #q-text 读成空串，反过来**覆盖**草稿（P1-3）
+export function flushDraft() {
+  if (!document.getElementById('q-text')) return;
+  try { saveDraft(); } catch {}
+}
 function loadDraft() {
   try { return JSON.parse(localStorage.getItem(draftKey()) || 'null'); } catch { return null; }
 }
@@ -177,15 +186,17 @@ function autoPreset() {
 async function compressImage(file) {
   return new Promise((resolve, reject) => {
     const img = new Image();
+    // 🔴 临时 URL 用完立即回收（此前每次压缩都会泄漏一个 blob URL）
+    const src = URL.createObjectURL(file);
     img.onload = () => {
       const scale = Math.min(1, 1280 / img.width);
       const cv = document.createElement('canvas');
       cv.width = Math.round(img.width * scale); cv.height = Math.round(img.height * scale);
       cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
-      cv.toBlob(b => b ? resolve(b) : reject(new Error('compress fail')), 'image/jpeg', 0.8);
+      cv.toBlob(b => { URL.revokeObjectURL(src); b ? resolve(b) : reject(new Error('compress fail')); }, 'image/jpeg', 0.8);
     };
-    img.onerror = reject;
-    img.src = URL.createObjectURL(file);
+    img.onerror = e => { URL.revokeObjectURL(src); reject(e); };
+    img.src = src;
   });
 }
 function renderImgs() {
@@ -208,7 +219,8 @@ async function pickImages(files) {
   for (const f of Array.from(files)) {
     if (form.imgs.length >= MAX_IMG) { toast(`最多 ${MAX_IMG} 张`); break; }
     const blob = await compressImage(f);
-    form.imgs.push({ blob, url: URL.createObjectURL(blob), desc: '' });
+    // 🔴 必须走 objUrl()（登记进 objUrls），否则"选了图但没保存就切 Tab"时 URL 回收不到（泄漏）
+    form.imgs.push({ blob, url: objUrl(blob), desc: '' });
   }
   renderImgs();
 }
@@ -378,7 +390,8 @@ function recCard(r, name) {
 }
 
 async function renderTimeline(tl, append) {
-  if (!append) { tlOffset = 0; tl.innerHTML = '<div class="empty">加载中…</div>'; }
+  // 🔴 重新渲染前先回收上一批 blob URL（否则反复切筛选会持续累加，见 P1-5）
+  if (!append) { revokeUrls(); tlOffset = 0; tl.innerHTML = '<div class="empty">加载中…</div>'; }
   const db = state.db;
   const students = await listStudents(db, { includeOut: true });
   const map = {}; students.forEach(s => map[s.id] = s.name);
@@ -517,15 +530,22 @@ export async function mount(scrollEl) {
     syncTagUI(scrollEl.querySelector('#q-tags'));
   });
 
-  // 恢复草稿
+  // 恢复草稿（🔴 P1-3：按字段分别回填）
+  //    form 是模块级变量 —— 切 Tab 回来时 form.stu 可能仍有值，旧代码要求"还没选学生"才回填，
+  //    于是整段被跳过 ⇒ 老师切走前写了一半的评语、切回来看到空白（草稿其实一直躺在 localStorage 里）
   const d = loadDraft();
-  if (d && !form.stu) {
-    form.stu = d.stu || null; form.tags = new Set(d.tags || []);
-    qText.value = d.text || ''; if (d.date) { qDate.value = d.date; form.date = d.date; }
-    redrawStu(); await renderTags(scrollEl);
-    const tip = scrollEl.querySelector('#q-draft');
-    if (tip && d.text) tip.textContent = '已恢复上次未保存的草稿';
-    lint();
+  if (d) {
+    let restored = false;
+    if (!form.stu && d.stu) { form.stu = d.stu; redrawStu(); restored = true; }
+    if (Array.isArray(d.tags) && d.tags.length && !form.tags.size) { form.tags = new Set(d.tags); restored = true; }
+    if (d.text && !qText.value) { qText.value = d.text; restored = true; }
+    if (d.date) { qDate.value = d.date; form.date = d.date; }
+    if (restored) {
+      await renderTags(scrollEl);
+      const tip = scrollEl.querySelector('#q-draft');
+      if (tip) tip.textContent = '已恢复上次未保存的草稿';
+      lint();
+    }
   }
 
   // 保存（🔴 状态机）

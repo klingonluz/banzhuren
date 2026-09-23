@@ -9,7 +9,7 @@ import {
   listStudents, bulkPutStudents, listCategories, bulkPutCategories, addCategory, updateCategory, deleteCategory,
   listTags, bulkPutTags, addTag, updateTag, deleteTag, listTemplates, bulkPutTemplates,
   listCollections, putCollection, deleteCollection,
-  getSchedule, bulkPutRecords, listDeleted, restoreRecord, deleteSemester, openSemester, countActiveRecords,
+  getSchedule, bulkPutRecords, listDeleted, restoreRecord, deleteSemester, openSemester, ensureOpen, countActiveRecords,
   putImage, listImages, deleteImage, dataURLToBlob, orphanImages
 } from '../db/semester.js';
 import { nameInitials } from '../pinyin.js';
@@ -18,21 +18,21 @@ import { openExport } from '../export.js';
 import {
   getSetting, setSetting, listSemesters, putSemester, ensureSemester, meta
 } from '../db/meta.js';
-import { putSnap, listSnaps, getSnap, deleteSnap, pruneAuto } from '../db/rescue.js';
+import { listSnaps, deleteSnap } from '../db/rescue.js';
+import { buildArchiveHTML, archiveFileName, fmtBytes } from '../archive.js';
 import { seedBaseline, WUYU, GUANZHU, CATEGORIES_SEED, TAGS_SEED } from '../db/seed.js';
 import { el, esc, toast, openPicker, closePickers, emptyState, bindEmpty, confirm, syncSeg, onSeg, banner, closeBanner, showSheet } from '../ui.js';
 
-const GRACE_DAYS = 7;                     // 归档宽限（§5.5）
 const SCHEMA_VERSION = 6;                 // 当前 schema 版本（V11.1）
-const APP_VER = 'v1.4.0';                 // 🔴 产品版本号（对外）：语义化递增，与 main.js 的 APP_VER 保持一致
-const PLAN_VER = 'V11.12';                // 🔴 方案版本号（内部，仅设置页可见）：与 dev/docs 里配对的方案文件同步，改功能才顺延
+const APP_VER = 'v1.5.0';                 // 🔴 产品版本号（对外）：语义化递增，与 main.js 的 APP_VER 保持一致
+const PLAN_VER = 'V11.13';                // 🔴 方案版本号（内部，仅设置页可见）：与 dev/docs 里配对的方案文件同步，改功能才顺延
 const pad = n => String(n).padStart(2, '0');
 
 function blobToDataURL(blob) {
   return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(blob); });
 }
-function download(filename, text) {
-  const blob = new Blob([text], { type: 'application/json' });
+function download(filename, text, mime = 'application/json') {
+  const blob = new Blob([text], { type: mime + ';charset=utf-8' });
   const u = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = u; a.download = filename; a.click();
@@ -89,27 +89,18 @@ export async function quickBackup() {
   return pack;
 }
 
-/* ---------- 自动备份（PWA 唯一能做的"真·自动"：滚动快照进独立库 bzr_rescue） ---------- */
-// 🔴 浏览器 PWA 无法在用户不点击时往硬盘写文件、手机端也没有 File System Access API，且本应用不联网不上传。
-//    因此"自动备份"= 自动把全量 pack 存进一个【与业务库隔离】的 IndexedDB，开 app 就留底；
-//    换设备前可一键导出 / 恢复，能挡 app bug 与误清，但挡不住整台手机丢失（那种仍需手动导出 JSON 存电脑）。
-const AUTO_KEEP = 3;                       // 每学期滚动保留最近 3 份
-const AUTO_MIN_GAP = 6 * 3600 * 1000;     // 两次自动快照最小间隔 6 小时，避免频繁写盘
-
-/* ---------- 自动备份卡片（查看 / 下载 / 恢复 / 清快照） ---------- */
-async function autoCard() {
-  const last = +(state.settings.lastAuto || await getSetting('lastAuto', 0));
-  const autos = (await listSnaps('auto').catch(() => [])).filter(s => s.semesterId === state.currentSemesterId);
+/* ---------- 抢救数据卡片（只列"打开失败"时尽力捞出的内容） ---------- */
+// 🔴 v1.5.0：原「自动备份 / 全量快照」（每次打开把整库含图写进 bzr_rescue）已删除 ——
+//    它挡不住换设备 / 换网址（最常见的两种丢失），却每次打开都要读全表、把每张图 base64 转一遍，
+//    图片还会在本机存两份。「编辑被打断的恢复」由记录页草稿机制（localStorage，输入即存）承担，
+//    比"6 小时才拍一次"的快照及时得多。bzr_rescue 只保留一个用途：打开失败时把还能读出的内容 dump 出来。
+async function rescueCard() {
   const rescues = await listSnaps('rescue').catch(() => []);
-  const ago = last ? Math.floor((Date.now() - last) / 3600000) + ' 小时前' : '还没有';
+  if (!rescues.length) return '';
   return `<div class="card">
-    <h2>🤖 自动备份 <span class="muted" style="font-weight:400;font-size:12px">本机快照</span></h2>
-    <div class="kv" style="border:none;padding:2px 0"><span>最近一次自动快照</span><b>${ago}</b></div>
-    <div class="kv"><span>本机保留</span><b>${autos.length} 份（滚动保留 ${AUTO_KEEP} 份）</b></div>
-    <button class="btn ghost mt" id="dt-auto-now">立即拍一份快照</button>
-    <button class="btn ghost mt" id="dt-auto-view">查看 / 恢复自动备份</button>
-    ${rescues.length ? `<button class="btn ghost mt danger" id="dt-rescue-view">⚠️ 查看抢救数据（${rescues.length} 份）</button>` : ''}
-    <div class="save-note">应用每次打开会自动留一份本机备份（与日常数据分开存放，日常数据损坏时它仍在）。要防丢手机，请仍用上方「导出备份」把 JSON 存电脑或网盘。</div>
+    <h2>⚠️ 抢救数据 <span class="muted" style="font-weight:400;font-size:12px">${rescues.length} 份</span></h2>
+    <div class="save-note" style="border:none;padding-top:0">这些是本应用某次<b>打开失败</b>时，尽力从本机库里捞出来的内容。可下载留存，或走导入流程合并回学期。</div>
+    <button class="btn ghost mt danger" id="dt-rescue-view">查看 / 下载抢救数据（${rescues.length} 份）</button>
   </div>`;
 }
 
@@ -163,34 +154,13 @@ function buildRescuePack(s) {
   };
 }
 
-/* ---------- 启动钩子：归档宽限到期 → 清本地 ---------- */
-// 🔴 自动备份（开 app 即留底，PWA 唯一真·自动兜底；与业务库隔离存 bzr_rescue）
-export async function autoBackupMaybe(force = false) {
-  try {
-    if (!state.db || !state.currentSemesterId) return;
-    const last = +(await getSetting('lastAuto', 0));
-    if (!force && Date.now() - last < AUTO_MIN_GAP) return;
-    const sched = await getSchedule(state.db).catch(() => null);
-    const pack = await buildExportPack();
-    await putSnap({
-      key: 'auto:' + state.currentSemesterId + ':' + Date.now(), type: 'auto',
-      semesterId: state.currentSemesterId, semesterName: state.semester?.name || '学期',
-      device: effectiveDeviceName(sched), exportedAt: Date.now(), pack
-    });
-    await pruneAuto(state.currentSemesterId, AUTO_KEEP);
-    await setSetting('lastAuto', Date.now());
-    state.settings.lastAuto = Date.now();
-  } catch (e) { console.warn('自动备份失败（不影响业务）', e); }
-}
+/* ---------- 启动钩子 ---------- */
+// 🔴 v1.5.0：原 autoBackupMaybe（每次打开把整库含图快照写进 bzr_rescue）已删除，理由见 rescueCard 上方注释。
 
+// 🔴 启动清理：只剩「回收站过期」一项。
+//    v1.5.0 起「归档宽限到期自动删库」已删除 —— 那是全应用唯一的自动删库路径；
+//    此后任何删库都由用户显式触发（彻底删除 / 清空名单 / 清除本机副本）。
 export async function housekeeping() {
-  const sems = await listSemesters();
-  for (const s of sems) {
-    if (s.status === 'grace' && s.archivedAt && Date.now() - s.archivedAt > GRACE_DAYS * 86400000) {
-      try { await deleteSemester(s.id); } catch {}
-      await putSemester({ ...s, status: 'cleared', clearedAt: Date.now() });
-    }
-  }
   // 回收站过期清理（下次启动时，不在老师翻记录时突然删）
   try {
     const days = +(state.settings.recycleDays || 30);
@@ -210,43 +180,35 @@ export async function mount(scrollEl) {
   const deleted = await listDeleted(db);
   const sto = await storageBreakdown();
   const sems = await listSemesters();
-  const archived = sems.filter(s => s.status === 'grace' || s.status === 'cleared' || s.status === 'archived');
+  // 🔴 档案柜只列「已归档」与「已清除」—— 归档学期不参与工作流，只在这里可见
+  const archived = sems.filter(s => s.status === 'archived' || s.status === 'cleared');
 
   scrollEl.innerHTML = `
     ${manageCard(students.length, cats.length, tags.length)}
     ${semesterCard(sto)}
     ${backupCard()}
     ${textCard()}
-    ${await autoCard()}
+    ${await rescueCard()}
     ${cabinetCard(archived)}
     ${trashCard(deleted.length, students)}
     <div class="card">
       <h2>🩺 诊断 / 兜底</h2>
-      <div class="diag">
-        <div class="kv" style="border:none;padding:4px 0"><span>多 Tab 写冲突保护</span><span class="pill yes">开</span></div>
-        <p class="muted" style="margin:4px 0 0">同一库被多个标签页打开时，保存会提示「其他页面也在编辑，请关闭后重试」，避免相互覆盖。</p>
-      </div>
+      <div class="save-note" style="border:none;padding-top:0">同时打开多个标签页编辑时，<b>后保存的会覆盖先保存的</b> —— 请一次只开一个页面记记录。</div>
       <button class="btn ghost mt" id="dt-settings">⚙️ 打开设置</button>
       <div class="save-note">任何失败路径都<b>保留输入</b>并明确告知原因；无痕模式 / 存储被禁用时显示兜底页，绝不白屏。</div>
     </div>`;
 
   scrollEl.querySelector('#dt-manage').onclick = () => openManage();
   scrollEl.querySelector('#dt-sem').onclick = () => openSemesters();
+  // 🔴 归档 = 盖章 + 产两份文件，**零删除**（想省空间另点「清除本机副本」）
   scrollEl.querySelector('#dt-archive').onclick = () => confirm({
     title: '归档本学期', danger: true,
-    msg: `将导出完整归档包并进入 ${GRACE_DAYS} 天宽限，宽限结束后清除本机数据（归档文件请存电脑或网盘）。确认归档？`,
-    okText: '我已备份，继续', onOk: doArchive
+    msg: '归档会为这个学期生成两份文件（备份 .json + 只读报告 .html），并把它标记为「已归档」。\n\n本机数据保持不动 —— 想省空间时，再到档案柜点「清除本机副本」。\n\n确认归档？',
+    okText: '开始归档', onOk: doArchive
   });
   scrollEl.querySelector('#dt-backup').onclick = async () => {
     try { await quickBackup(); toast('备份已导出（全量含图）'); render(); }
     catch (e) { banner('errBanner', '⚠️ 导出失败：<b>' + esc(e.message || e) + '</b>（数据未被改动，可重试）。'); }
-  };
-  scrollEl.querySelector('#dt-auto-now').onclick = async () => {
-    await autoBackupMaybe(true); toast('已拍一份本机快照'); render();
-  };
-  scrollEl.querySelector('#dt-auto-view').onclick = async () => {
-    const ss = await listSnaps('auto').catch(() => []);
-    openSnapList('自动备份', ss, 'yes');
   };
   const rescueBtn = scrollEl.querySelector('#dt-rescue-view');
   if (rescueBtn) rescueBtn.onclick = async () => {
@@ -257,11 +219,9 @@ export async function mount(scrollEl) {
   scrollEl.querySelector('#dt-import').onclick = () => openImport();
   scrollEl.querySelector('#dt-trash').onclick = () => openTrash();
   scrollEl.querySelector('#dt-settings').onclick = () => openSettings();
-  scrollEl.querySelectorAll('[data-import-pkg]').forEach(b => b.onclick = () => openImport(true));
-  scrollEl.querySelectorAll('[data-cancel-arch]').forEach(b => b.onclick = async () => {
-    const s = archived.find(x => x.id === b.dataset.cancelArch);
-    await putSemester({ ...s, status: 'active', archivedAt: null });
-    toast('已取消归档，可切换回该学期'); render();
+  scrollEl.querySelectorAll('[data-clear-copy]').forEach(b => b.onclick = () => {
+    const s = archived.find(x => x.id === b.dataset.clearCopy);
+    if (s) clearSemesterCopy(s, render);
   });
   bindEmpty(scrollEl, () => {});
 }
@@ -285,8 +245,8 @@ function semesterCard(sto) {
     <div class="kv" style="border:none;padding:2px 0"><span>当前学期</span><b>${esc(state.semester?.name || '—')}</b></div>
     <div class="kv"><span>记录 / 图片 / 占用</span><b>${sto.recN} 条 · ${sto.imgN} 张 · ${fmtMB(sto.total)}</b></div>
     <button class="btn ghost mt" id="dt-sem">切换 / 管理学期</button>
-    <button class="btn danger mt" id="dt-archive">归档本学期（导出后清本地）</button>
-    <div class="save-note">一学期一库；新建默认继承在册名单 + 分类 + 标签库 + 模板，<b>不继承</b>记录 / 图片 / 课表 / 收缴。</div>
+    <button class="btn danger mt" id="dt-archive">归档本学期（生成归档文件）</button>
+    <div class="save-note">一学期一库；新建默认继承在册名单 + 分类 + 标签库 + 模板，<b>不继承</b>记录 / 图片 / 课表 / 收缴。<b>归档只生成文件、不动本机数据</b>；要省空间，归档后再到档案柜点「清除本机副本」。</div>
   </div>`;
 }
 function backupCard() {
@@ -311,21 +271,23 @@ function cabinetCard(archived) {
   return `<div class="card">
     <h2>🏛️ 归档档案柜</h2>
     <div id="dt-cab">${archived.length ? archived.map(s => {
-      const left = s.status === 'grace' && s.archivedAt
-        ? Math.max(0, GRACE_DAYS - Math.floor((Date.now() - s.archivedAt) / 86400000)) : 0;
+      const f = s.archivedFiles || {};
+      const day = s.archivedAt ? new Date(s.archivedAt).toLocaleDateString('zh-CN') : '—';
+      const size = f.bytes ? `约 ${fmtBytes((f.bytes.json || 0) + (f.bytes.html || 0))}` : '';
       return `<div class="archive-row">
         <div style="flex:1;min-width:0">
-          <b>${esc(s.name)}</b>
-          <div class="fn">${s.archivedAt ? new Date(s.archivedAt).toLocaleDateString('zh-CN') : '—'} · ${esc(s.archivedFileName || '未记录文件名')}</div>
-          <div class="fn">${s.status === 'grace' ? `⏳ 还剩 ${left} 天清除` : '已清除本地副本（墓碑永久保留）'}</div>
+          <b>${esc(s.name)}</b>${s.status === 'cleared' ? ' <span class="pill no">本机已清除</span>' : ''}
+          <div class="fn">归档于 ${day}</div>
+          <div class="fn">📄 ${esc(f.json || s.archivedFileName || '未记录文件名')}</div>
+          <div class="fn">🌐 ${esc(f.html || '未记录文件名')}</div>
+          <div class="fn">${s.status === 'cleared' ? '本机数据已清除（归档文件应已存在你的电脑 / 网盘上）' : `本机副本：保留中${size ? ' · ' + size : ''}`}</div>
         </div>
         <div style="display:flex;flex-direction:column;gap:6px">
-          ${s.status === 'grace' ? `<button class="mini" data-cancel-arch="${esc(s.id)}">取消归档</button>` : ''}
-          <button class="mini" data-import-pkg="${esc(s.id)}">导入归档包</button>
+          ${s.status === 'archived' ? `<button class="mini danger" data-clear-copy="${esc(s.id)}">清除本机副本</button>` : ''}
         </div>
       </div>`;
     }).join('') : emptyState('还没有归档学期', '')}</div>
-    <div class="save-note">两种状态都会显示归档文件名，方便你在网盘里找到对应文件。</div>
+    <div class="save-note">归档会生成两份文件：<b>.json</b> 是可导入恢复的备份，<b>.html</b> 是双击就能只读查看的报告（含图）。两份都请存到电脑或网盘 —— 那是唯一能跨设备带走数据的方式。</div>
   </div>`;
 }
 function trashCard(n) {
@@ -416,7 +378,7 @@ async function drawStudents(box) {
   };
   box.querySelector('#mg-clear').onclick = () => confirm({
     title: '清空全部名单', danger: true,
-    msg: '将删除本班全部学生，<b>并一并清除本学期所有成长记录与图片</b>（仅本学期）。用于替换为你的真实名单，操作不可恢复。',
+    msg: '将删除本班全部学生，并一并清除本学期所有成长记录与图片（仅本学期）。\n\n用于替换为你的真实名单，操作不可恢复。',
     okText: '清空并重建', onOk: async () => {
       try {
         const recs = await db.growth_records.toArray();
@@ -594,7 +556,7 @@ function editPresetComment(t) {
 }
 
 /* ---------- 学期管理 ---------- */
-function openSemesters() {
+export function openSemesters() {
   const p = openPicker({
     title: '学期管理',
     lead: '一学期一库。新建默认继承在册名单 + 分类 + 标签库 + 模板；记录 / 图片 / 课表 / 收缴不继承。',
@@ -606,9 +568,10 @@ function openSemesters() {
     p.body.querySelector('#sm-box').innerHTML = sems.map(s => `
       <div class="li" data-go="${esc(s.id)}">
         <div style="flex:1;min-width:0">
-          <div class="nm">${esc(s.name)}${s.id === state.currentSemesterId ? ' <span class="pill yes">当前</span>' : ''}</div>
+          <div class="nm">${esc(s.name)}${s.id === state.currentSemesterId ? ' <span class="pill yes">当前</span>' : ''}${
+            s.status === 'archived' ? ' <span class="pill">已归档</span>' : s.status === 'cleared' ? ' <span class="pill no">本机已清除</span>' : ''}</div>
           <div class="meta">${s.startAt ? new Date(s.startAt).toLocaleDateString('zh-CN') : '—'} · ${
-            s.status === 'grace' ? '归档宽限中' : s.status === 'cleared' ? '已清除' : s.status === 'archived' ? '已归档' : '在用'}</div>
+            s.status === 'cleared' ? '本机数据已清除' : s.status === 'archived' ? '已归档，不在本应用内打开' : '在用'}</div>
         </div>
       </div>`).join('') || '<div class="empty">还没有学期</div>';
     p.body.querySelector('#sm-box').onclick = async e => {
@@ -616,7 +579,8 @@ function openSemesters() {
       const sems2 = await listSemesters();
       const s = sems2.find(x => x.id === row.dataset.go);
       if (!s || s.id === state.currentSemesterId) { p.close(); return; }
-      if (s.status === 'cleared') { toast('该学期本地已清除，请导入归档包'); return; }
+      if (s.status === 'cleared') { toast('该学期本机数据已清除，只能看归档文件'); return; }
+      if (s.status === 'archived') { toast('该学期已归档，不在本应用内打开'); return; }
       await switchSemester(s); p.close();
     };
   };
@@ -645,7 +609,7 @@ function openSemesters() {
   };
 }
 
-async function switchSemester(s) {
+export async function switchSemester(s) {
   try {
     if (localStorage.getItem('bzr_draft_' + state.currentSemesterId)) {
       const ok = window.confirm('有未保存的草稿，切换学期会保留在当前学期。确定切换？');
@@ -661,27 +625,36 @@ async function switchSemester(s) {
   refresh();
 }
 
-/* ---------- 归档 ---------- */
+/* ---------- 归档（只盖章 + 产两份文件，零删除） ---------- */
+// 🔴 v1.5.0：归档与删除彻底解耦。
+//    旧版是「导出 → 立即清表 → 7 天后自动删库」，删除风险全压在"导出是否成功"这一个前提上；
+//    现在归档**永不删数据**，省空间由老师到档案柜点「清除本机副本」（见 clearSemesterCopy）。
 async function doArchive() {
+  const sem = state.semester;
+  const now = Date.now();
+  let jsonName, htmlName, pack;
   try {
-    const pack = await buildExportPack();
-    const fn = `班主任工作台_${state.semester?.name || '学期'}_归档.json`;
-    download(fn, JSON.stringify(pack));
-    await putSemester({ ...state.semester, status: 'grace', archivedAt: Date.now(), archivedFileName: fn });
-    toast('归档包已导出，进入 7 天宽限');
+    pack = await buildExportPack();
+    jsonName = archiveFileName(sem?.name, 'json', now);
+    htmlName = archiveFileName(sem?.name, 'html', now);
+    const jsonText = JSON.stringify(pack);
+    const htmlText = buildArchiveHTML(pack);
+    download(jsonName, jsonText, 'application/json');
+    download(htmlName, htmlText, 'text/html');
+    await putSemester({
+      ...sem, status: 'archived', archivedAt: now,
+      archivedFiles: { json: jsonName, html: htmlName, bytes: { json: jsonText.length, html: htmlText.length } }
+    });
+    state.semester = { ...sem, status: 'archived', archivedAt: now, archivedFiles: { json: jsonName, html: htmlName } };
   } catch (e) {
-    banner('errBanner', '⚠️ 归档导出失败：<b>未做任何删除</b>（数据原样保留）。');
+    banner('errBanner', `⚠️ 归档失败：<b>本机数据未做任何改动</b>（可重试）。${esc(e.message || e)}`);
     return;
   }
-  // 立即清除本地副本（归档包已在手）
-  try {
-    const db = state.db;
-    await db.growth_records.clear(); await db.students.clear();
-    await db.categories.clear(); await db.tags.clear(); await db.templates.clear();
-    await db.collections.clear(); await db.schedule.clear();
-    const imgs = await listImages(db);
-    for (const im of imgs) await deleteImage(db, im.imageId);
-  } catch {}
+  toast('已归档：两份文件已下载，请存到电脑或网盘');
+  banner('archiveBanner',
+    `📚 「${esc(sem?.name || '本学期')}」已归档。请把刚下载的两份文件（<b>.json</b> 备份 / <b>.html</b> 只读报告）存到电脑或网盘 —— 那是唯一能跨设备带走数据的方式。要省空间，可到「归档档案柜」点「清除本机副本」。`,
+    'warn');
+  // 归档只是盖章：本机数据照旧，只是要换个学期继续记录
   const sems = await listSemesters();
   const next = sems.find(s => s.status === 'active' && s.id !== state.currentSemesterId);
   if (next) await switchSemester(next);
@@ -690,6 +663,32 @@ async function doArchive() {
     await ensureSemester(ns); await seedBaseline(openSemester(ns.id)); await switchSemester(ns);
   }
   refresh();
+}
+
+/* ---------- 清除本机副本（归档之后的独立动作；二次确认后才删库） ---------- */
+// 🔴 决策：清除后**不能反悔** —— 所以确认框必须把两份归档文件的名字念给老师听，让他自己核对
+function clearSemesterCopy(s, render) {
+  const f = s.archivedFiles || {};
+  const jn = f.json || s.archivedFileName || '（未记录文件名）';
+  const hn = f.html || '（未记录文件名）';
+  confirm({
+    title: '清除本机副本', danger: true,
+    // 🔴 msg 走 esc 渲染（不解析 HTML）⇒ 这里用纯文本 + 换行，不要写 <b> / <br>
+    msg: `将删除本机「${s.name}」这个学期的全部数据（记录 / 图片 / 名单），以释放空间。\n\n`
+      + `此操作不可恢复 —— 清除后本应用不再认识这个学期，也无法取消。\n\n`
+      + `请先确认两份归档文件已在电脑或网盘上：\n· ${jn}\n· ${hn}`,
+    okText: '文件已在手，清除',
+    onOk: async () => {
+      try {
+        await deleteSemester(s.id);
+        await putSemester({ ...s, status: 'cleared', clearedAt: Date.now() });
+        toast('本机副本已清除');
+      } catch (e) {
+        banner('errBanner', `⚠️ 清除失败：<b>本机数据未被删除</b>（${esc(e.message || e)}）。`);
+      }
+      refresh(); if (render) render();
+    }
+  });
 }
 
 /* ---------- 导入（校验 → 学期识别 → 差异 → 逐条裁决） ---------- */
@@ -736,27 +735,40 @@ export async function openImportPack(pack) {
   });
   const sems = await listSemesters();
   const mine = sems.find(s => s.id === pack.semesterId);
+  // 🔴 学期识别两类（v1.5.0 简化）：
+  //    A ＝ 就是当前学期 → 逐条裁决合并
+  //    C ＝ 本机没有该学期数据（本机没这个学期，或已清除本机副本）→ 重建学期库并导入全部
+  //    B ＝ 本机已有该学期且数据仍在（在用 / 已归档）→ **一律拒绝**
+  //        （归档学期不在本应用内打开，也不该被导入拉回；见方案 §2.5）
   let kind = 'C';
   if (mine && mine.id === state.currentSemesterId) kind = 'A';
-  else if (mine && (mine.status === 'grace' || mine.status === 'cleared' || mine.status === 'archived')) kind = 'B';
+  else if (mine && mine.status !== 'cleared') kind = 'B';
+  const reject = kind === 'B';
   p.body.querySelector('#im-info').innerHTML = `
     <div class="kv" style="border:none"><span>来源学期</span><b>${esc(pack.semester?.name || pack.semesterId)}</b></div>
     <div class="kv"><span>来源设备 / 时间</span><b>${esc(pack.device || '—')} · ${new Date(pack.exportedAt || Date.now()).toLocaleString('zh-CN')}</b></div>
     <div class="kv"><span>学期识别</span><b><span class="badge ${kind === 'A' ? 'a' : kind === 'B' ? 'b' : 'c'}">情形 ${kind}</span></b></div>
-    <p class="muted" style="margin:8px 0">${kind === 'A' ? '与当前学期一致 → 走逐条对比合并'
-      : kind === 'B' ? '该学期已归档 → 整库替换（不可部分合并），需二次确认'
-      : '本机不存在该学期 → 默认新建该学期并导入全部'}</p>
-    <button class="btn" id="im-go">下一步：查看差异</button>`;
-  p.body.querySelector('#im-go').onclick = () => showDiff(pack, kind, p);
+    <p class="muted" style="margin:8px 0">${kind === 'A' ? '与当前学期一致 → 走逐条对比合并，绝不默认覆盖'
+      : reject ? '该学期已在本机且数据仍在（含已归档）→ 不能导入覆盖'
+      : '本机没有该学期的数据 → 新建学期并导入全部'}</p>
+    ${reject ? `<div class="save-note danger">该学期在本机已有数据，不能被导入覆盖。<b>已归档的学期不在本应用内打开</b> —— 要看它就打开归档的 .html 报告。若确需在这台设备上恢复它，请先到档案柜清除本机副本；清除后本机不再有该学期，这份备份即可导入。</div>`
+      : `<button class="btn" id="im-go">下一步：查看差异</button>`}`;
+  const goBtn = p.body.querySelector('#im-go');
+  if (goBtn) goBtn.onclick = () => showDiff(pack, kind, p);
 }
 
-// 逐条校验：bad structure / unknown studentId 跳过；按 id 比对（updatedAt 优先，内容兜底）
+// 逐条校验：bad structure / unknown studentId 跳过；按 id 比对（内容兜底）
+// 🔴 目标库：A 类写当前学期；C 类写包里那个学期（本机没有 → 现建）
 async function showDiff(pack, kind, parent) {
-  const db = state.db;
-  const local = await db.growth_records.toArray();
+  const isNew = kind === 'C';
+  const db = isNew ? null : state.db;
+  const local = db ? await db.growth_records.toArray() : [];
   const localMap = {}; local.forEach(r => localMap[r.id] = r);
   const fileMap = {}; pack.records.forEach(r => fileMap[r.id] = r);
-  const validStu = new Set((await db.students.toArray()).map(s => s.id));
+  // 🔴 C 类本机没有名单 ⇒ 用包里带的学生做校验。换设备恢复的关键：学生必须先导进来，否则记录会被整批跳过
+  const validStu = new Set(isNew
+    ? (pack.students || []).map(s => s.id)
+    : (await db.students.toArray()).map(s => s.id));
   const differs = (a, b) => a.text !== b.text || a.category !== b.category ||
     JSON.stringify(a.tags || []) !== JSON.stringify(b.tags || []) || a.date !== b.date;
   const added = [], changed = [], skipped = [], localOnly = [];
@@ -765,8 +777,7 @@ async function showDiff(pack, kind, parent) {
     if (!r || typeof r !== 'object' || !r.studentId || !Array.isArray(r.tags)) { skipped.push(r); continue; }
     if (!validStu.has(r.studentId)) { skipped.push(r); continue; }   // 🔴 未知学生：跳过
     if (!localMap[id]) added.push(r);
-    else if (localMap[id].updatedAt !== r.updatedAt && differs(localMap[id], r)) changed.push(r);
-    else if (localMap[id].updatedAt === r.updatedAt && differs(localMap[id], r)) changed.push(r);
+    else if (differs(localMap[id], r)) changed.push(r);              // 内容不同即需裁决
   }
   for (const id in localMap) if (!fileMap[id]) localOnly.push(localMap[id]);
 
@@ -775,8 +786,7 @@ async function showDiff(pack, kind, parent) {
   changed.forEach(r => choices[r.id] = 'imp');
   localOnly.forEach(r => choices[r.id] = 'loc');   // 🔴 本地独有默认一条不删
 
-  const stuName = id => (pack.students || []).find(s => s.id === id)?.name
-    || (db ? '' : '');
+  const stuName = id => (pack.students || []).find(s => s.id === id)?.name || id;
   const cardHTML = (r) => {
     const loc = localMap[r.id];
     return `<div class="cf" data-id="${esc(r.id)}">
@@ -824,32 +834,42 @@ async function showDiff(pack, kind, parent) {
 
   p.foot.querySelector('#df-apply').onclick = async () => {
     try {
-      // 🔴 学期识别 B：整库替换（先清后写）
-      if (kind === 'B') {
-        await db.growth_records.clear(); await db.categories.clear(); await db.tags.clear(); await db.templates.clear();
-        await db.images.clear(); await db.schedule.clear();
+      // 🔴 C 类：本机没有这个学期 → 按包里的 semesterId 建库、**先落学生**，再导其余内容
+      //    （旧版这里用的是当前学期库、且从不写 pack.students ⇒ 换设备恢复永远导不进任何东西）
+      let tdb = db;
+      if (isNew) {
+        await ensureSemester({
+          id: pack.semesterId,
+          name: (pack.semester && pack.semester.name) || '导入的学期',
+          startAt: (pack.semester && pack.semester.startAt) || pack.exportedAt || Date.now(),
+          status: 'inactive'                        // 本机存在但非当前：可用「切换 / 管理学期」切过去
+        });
+        tdb = openSemester(pack.semesterId);
+        await ensureOpen(tdb, pack.semesterId);     // 建库 + 跑一次结构迁移
+        await bulkPutStudents(tdb, pack.students || []);
+        if (pack.schedule) await saveSchedSafe(tdb, pack.schedule);
       }
-      await db.transaction('rw', db.growth_records, db.images, async () => {
+      await tdb.transaction('rw', tdb.growth_records, tdb.images, async () => {
         for (const r of [...added, ...changed]) {
           const c = choices[r.id] || 'imp';
           if (c === 'loc') continue;
           if (c === 'both') {
-            await db.growth_records.put({ ...r, id: r.id + '_i', del: 0 });
+            await tdb.growth_records.put({ ...r, id: r.id + '_i', del: 0 });
           } else {
-            await db.growth_records.put({ ...r, del: r.del || 0 });
+            await tdb.growth_records.put({ ...r, del: r.del || 0 });
           }
         }
       });
       // 图片（学期库）
       for (const im of (pack.images || [])) {
-        try { await putImage(db, im.imageId, dataURLToBlob(im.data)); } catch {}
+        try { await putImage(tdb, im.imageId, dataURLToBlob(im.data)); } catch {}
       }
       // 分类 / 标签 / 模板：按 id 增量合并（不覆盖本地已有）
-      await mergeById(db.categories, pack.categories);
-      await mergeById(db.tags, pack.tags);
-      await mergeById(db.templates, pack.templates);
-      if (pack.schedule) await saveSchedSafe(db, pack.schedule);
-      toast(`导入完成：新增 ${added.length}，更新 ${changed.length}${skipped.length ? `，跳过 ${skipped.length}` : ''}`);
+      await mergeById(tdb.categories, pack.categories);
+      await mergeById(tdb.tags, pack.tags);
+      await mergeById(tdb.templates, pack.templates);
+      if (!isNew && pack.schedule) await saveSchedSafe(tdb, pack.schedule);
+      toast(`导入完成：${isNew ? '新建学期，' : ''}新增 ${added.length}，更新 ${changed.length}${skipped.length ? `，跳过 ${skipped.length}` : ''}`);
       p.close(); parent.close(); refresh();
     } catch (e) { toast('导入失败，已回滚：' + e.message); }
   };
@@ -888,7 +908,7 @@ function openTrash() {
       if (re) { await restoreRecord(state.db, re.dataset.re); toast('已恢复'); draw(); refresh(); return; }
       const hd = e.target.closest('[data-hard]');
       if (hd) {
-        confirm({ title: '彻底删除', msg: '不可恢复。其图片将变成多余图片，可在下方「清理多余图片」回收。', danger: true, onOk: async () => {
+        confirm({ title: '彻底删除', msg: '不可恢复，其图片也会一并删除。', danger: true, onOk: async () => {
           const r = await state.db.growth_records.get(hd.dataset.hard);
           for (const id of (r?.imageIds || [])) { try { await deleteImage(state.db, id); } catch {} }
           await state.db.growth_records.delete(hd.dataset.hard);

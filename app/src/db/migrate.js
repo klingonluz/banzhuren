@@ -44,7 +44,8 @@ export class DbOpenError extends Error {
 // 值按「类型化的空」给：数组给 []、字符串给 ''、数值索引给 0（IndexedDB 不索引 null / undefined）
 // 🔴 绝不写 null：del / out 这类是索引键，写 null 等于让记录从查询里消失（红线8）
 const META_RULES = {
-  semesters: { defaults: { status: 'active', startAt: 0 } }
+  // archivedFiles / archivedAt：v1.5.0 归档改造新增（归档后记两份文件名，方便去网盘对号）
+  semesters: { defaults: { status: 'active', startAt: 0, archivedAt: 0, archivedFiles: {} } }
 };
 
 const SEMESTER_RULES = {

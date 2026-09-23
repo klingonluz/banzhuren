@@ -1,12 +1,12 @@
 // 班主任工作台 Service Worker（PWA 离线缓存）
 // 🔴 关键：cache-first 会把旧 JS 永久缓存，导致修复后的代码刷不出来。
 // 改成 network-first（在线取最新，离线回退缓存）+ 每次发版 bump CACHE 清除旧缓存。
-const CACHE = 'bzr-v37';
+const CACHE = 'bzr-v38';
 const ASSETS = [
   './', './index.html', './manifest.webmanifest', './favicon.svg', './recover.html',
   './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png',
   './apple-touch-icon.png',
-  './src/styles.css', './src/main.js', './src/state.js', './src/ui.js', './src/pinyin.js', './src/privacy.js', './src/export.js',
+  './src/styles.css', './src/main.js', './src/state.js', './src/ui.js', './src/pinyin.js', './src/privacy.js', './src/export.js', './src/archive.js',
   './src/db/meta.js', './src/db/semester.js', './src/db/seed.js', './src/db/rescue.js', './src/db/migrate.js',
   './src/tabs/record.js', './src/tabs/class.js', './src/tabs/analysis.js', './src/tabs/data.js',
   './vendor/dexie.min.js'

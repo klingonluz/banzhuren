@@ -11,7 +11,7 @@ import { el, esc, toast, banner, closeBanner, openPicker, closePickers } from '.
 import { mount as mountRecord, flushDraft } from './tabs/record.js';
 import { mount as mountClass } from './tabs/class.js';
 import { mount as mountAnalysis } from './tabs/analysis.js';
-import { mount as mountData, housekeeping, quickBackup, openSettings, autoBackupMaybe, openSnapList, openImportPack } from './tabs/data.js';
+import { mount as mountData, housekeeping, quickBackup, openSettings, openSemesters, switchSemester, openSnapList, openImportPack } from './tabs/data.js';
 import { listSnaps, rescueError } from './db/rescue.js';
 import { classifyDbError, DB_ERR_NEWER, DB_ERR_BLOCKED, DB_ERR_CORRUPT } from './db/migrate.js';
 
@@ -27,7 +27,7 @@ let activeTab = 'record';
 // 🔴 产品版本号（对外：页脚展示 + 更新 UI）。语义化：修 bug 升末位（v1.0.1）、
 //    加功能升中位（v1.1.0）、数据结构不兼容升首位（v2.0.0）。首个公开发布 = v1.0.0。
 //    注意：内部还有一套「方案文档版本号」（如 V11.10），只用于设计记录，不对外，见 tabs/data.js 的 PLAN_VER。
-const APP_VER = 'v1.4.0';
+const APP_VER = 'v1.5.0';
 // 🔴 部署网址锚点（换网址风险防护，§13.7.1）：留空 = 首次启动自动记录当前 origin 并比对；
 //    上线固定域名后建议填死，例如 'https://banzhuren.example.com'，网址变化即弹告警提醒导入备份。
 const EXPECTED_ORIGIN = '';
@@ -111,23 +111,29 @@ async function toggleSemPop() {
   const pop = document.getElementById('sem-pop');
   if (pop.classList.contains('show')) { pop.classList.remove('show'); return; }
   const sems = await meta.semesters.orderBy('startAt').toArray();
+  // 🔴 只列「在用」的学期：已归档 / 本机已清除的不出现在切换器里（归档学期不在本应用内打开，见方案 §2.4）
+  const usable = sems.filter(s => s.status !== 'cleared' && s.status !== 'archived');
+  const hidden = sems.length - usable.length;
   // 🔴 头像文字来自「教师姓名」设置：这里给个直达入口，点一下就能改
   const hasName = !!(state.settings.teacherName || '').trim();
   pop.innerHTML = `<div class="opt tn" data-tname="1">👤 ${esc(hasName ? state.settings.teacherName + ' · 修改姓名 / 头像' : '设置姓名 / 头像')}</div>`
-    + sems.filter(s => s.status !== 'cleared').map(s =>
-    `<div class="opt ${s.id === state.currentSemesterId ? 'on' : ''}" data-id="${s.id}">${esc(s.name)}${s.status === 'grace' ? ' · 归档宽限' : s.status === 'archived' ? ' · 已归档' : ''}</div>`
-  ).join('') + `<div class="opt" data-manage="1">⚙️ 管理学期…</div>`;
+    + usable.map(s =>
+      `<div class="opt ${s.id === state.currentSemesterId ? 'on' : ''}" data-id="${s.id}">${esc(s.name)}</div>`
+    ).join('')
+    + (hidden ? `<div class="opt" data-cabinet="1">🏛️ ${hidden} 个已归档学期 · 去档案柜</div>` : '')
+    + `<div class="opt" data-manage="1">⚙️ 管理学期…</div>`;
   pop.classList.add('show');
   pop.onclick = async e => {
     const opt = e.target.closest('.opt'); if (!opt) return;
     pop.classList.remove('show');
     if (opt.dataset.tname) { openSettings(); return; }
-    if (opt.dataset.manage) { switchTab('data'); toast('在「数据 → 学期管理」中操作'); return; }
+    // 🔴 「管理学期…」现在真的把学期管理弹层打开（旧版只跳 Tab 就结束，是个空操作）
+    if (opt.dataset.manage) { switchTab('data'); openSemesters(); return; }
+    if (opt.dataset.cabinet) { switchTab('data'); return; }
     const s = sems.find(x => x.id === opt.dataset.id);
     if (!s || s.id === state.currentSemesterId) return;
-    await meta.semesters.put({ ...s, status: 'active' });
-    setSemester(s); await setSetting('currentSemester', s.id);
-    toast('已切换到 ' + s.name); refresh();
+    // 🔴 统一走 switchSemester：它会把其他在用学期置为 inactive，避免出现多个 active
+    await switchSemester(s); refresh();
   };
 }
 document.addEventListener('click', e => {
@@ -308,7 +314,9 @@ async function setupUpdate() {
   navigator.serviceWorker.addEventListener('controllerchange', () => { window.location.reload(); });
 }
 async function checkForUpdate() {
-  if (!swReg) { toast('已是最新版本'); return; }
+  // 🔴 P1-9：没有 SW 时不能说"已是最新版本"——那与真实能力不符（老浏览器 / 注册失败 / 非安全上下文）
+  if (!('serviceWorker' in navigator)) { toast('当前浏览器不支持自动更新，请用 Chrome / Edge / Safari 打开'); return; }
+  if (!swReg) { toast('离线更新暂不可用，刷新页面即可获取最新版'); return; }
   try { await swReg.update(); } catch {}
   if (swReg.waiting) { waitingSw = swReg.waiting; showUpdateMask(); }
   else if (navigator.serviceWorker.controller) toast('已是最新版本');
@@ -408,7 +416,6 @@ async function boot() {
     captureInstallPrompt();
     state.settings.persisted = await readPersisted();
     await housekeeping();
-    await autoBackupMaybe();                 // 🔴 开 app 即自动留一份本机快照（与业务库隔离）
     await maybeOnboard();
     switchTab('record');
     await backupBanner();
@@ -426,9 +433,8 @@ async function boot() {
       const re = rescueError();
       if (re) banner('rescueBrokenBanner', `⚠️ 本机自动备份暂时不可用（${esc(re.name || '存储异常')}），<b>请到「数据 → 备份与恢复」手动导出</b>一份。`, 'warn');
     } catch (_) {}
-    // 🔴 定时 + 切回前台 自动快照（最小间隔 6h，在 autoBackupMaybe 内节流）
-    setInterval(() => autoBackupMaybe(), 15 * 60 * 1000);
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) autoBackupMaybe(); });
+    // 🔴 v1.5.0：原「定时 + 切回前台自动快照」已删除（理由见 tabs/data.js 的 rescueCard 上方注释）。
+    //    编辑中途被打断由记录页草稿机制兜底（localStorage，输入即存），比快照及时得多。
   } catch (e) {
     // 🔴 启动失败兜底页（绝白屏）：按故障类型给不同出口，**绝不自动清空数据**（§13.25）
     renderBootError(app, e);
