@@ -58,6 +58,8 @@ body{font:var(--fs-base)/1.5 -apple-system,"PingFang SC","Microsoft YaHei",syste
 .muted{color:var(--txt2);font-size:var(--fs-sm)}
 code{background:#eef1ee;padding:1px 5px;border-radius:4px;font-size:11px;color:var(--primary-d)}
 .draft{font-size:11px;color:var(--txt3);text-align:right;margin-top:6px;min-height:14px}
+/* 🔴 常驻的规范建议是一整句，右对齐读不清（右对齐只适合「补录 2026-09-22」这类一行短提示） */
+.draft.rule{text-align:left;line-height:1.6}
 /* 🔴 记录规范实时提示：命中「分数 / 名次 / 他人姓名」时转为醒目块（左对齐才读得清） */
 .draft.warn{color:#9a6b12;text-align:left;line-height:1.6;background:#fff9ec;border:1px solid #f0d9a8;border-radius:8px;padding:8px 10px}
 /* 🔴 照片入库确认（§2.12 C4）：不勾选不让保存 */

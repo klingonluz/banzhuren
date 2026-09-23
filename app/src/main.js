@@ -27,7 +27,7 @@ let activeTab = 'record';
 // 🔴 产品版本号（对外：页脚展示 + 更新 UI）。语义化：修 bug 升末位（v1.0.1）、
 //    加功能升中位（v1.1.0）、数据结构不兼容升首位（v2.0.0）。首个公开发布 = v1.0.0。
 //    注意：内部还有一套「方案文档版本号」（如 V11.10），只用于设计记录，不对外，见 tabs/data.js 的 PLAN_VER。
-const APP_VER = 'v1.6.0';
+const APP_VER = 'v1.6.1';
 // 🔴 部署网址锚点（换网址风险防护，§13.7.1）：留空 = 首次启动自动记录当前 origin 并比对；
 //    上线固定域名后建议填死，例如 'https://banzhuren.example.com'，网址变化即弹告警提醒导入备份。
 const EXPECTED_ORIGIN = '';
@@ -60,7 +60,7 @@ function shell() {
       <div class="update-card">
         <div class="ic">🔄</div>
         <h3>发现新版本</h3>
-        <p>已为你准备好更新。点击「立即更新」会先保存当前草稿再重启，不会丢失正在写的内容。</p>
+        <p>点「立即更新」会先保存草稿再重启，不会丢正在写的内容。</p>
         <div class="row">
           <button class="btn ghost" id="um-later">稍后</button>
           <button class="btn" id="um-now">立即更新</button>
@@ -179,8 +179,8 @@ async function hintFor(key) {
   const HINTS = {
     record: { anchor: '#q-stu', text: '先点这里选学生，再点标签、写评语，30 秒记一条。' },
     class:  { anchor: '#cl-today', text: '课表按节次索引：改作息不会让课程错位。' },
-    analysis: { anchor: '#an-ai', text: '要发给 AI 就用「AI 评语素材」：姓名换成代号，分数、名次、具体日期与他人姓名自动隐去，照片不参与。' },
-    data:   { anchor: '#dt-backup', text: '手机会丢、系统会清，定期导出备份是唯一的保险；要给家长看的文字材料用「成长记录文本」。' },
+    analysis: { anchor: '#an-ai', text: '要发给 AI 就用「AI 评语素材」：姓名换代号，分数名次日期自动隐去，照片不参与。' },
+    data:   { anchor: '#dt-backup', text: '定期导出备份是唯一的保险；给家长看的材料用「成长记录文本」。' },
   };
   const h = HINTS[key]; if (!h) return;
   const dismissed = (await getSetting('dismissedHints', [])) || [];
@@ -227,7 +227,7 @@ async function maybeOnboard() {
       <div class="field"><label>教师姓名</label><input class="ta" id="ob-tname" value="${esc(state.settings.teacherName || '')}" placeholder="如：李老师 / 李明"></div>
       <div class="field"><label>学期名称</label><input class="ta" id="ob-name" value="${esc(state.semester?.name || '')}"></div>
       <div class="field"><label>起始日期</label><input class="ta" type="date" id="ob-start" value="${new Date().toISOString().slice(0, 10)}"></div>
-      <div class="save-note">教师姓名用于顶栏头像与备份设备名，稍后可在「设置」里改；一学期一个独立数据库，期末归档后手机不留旧数据。</div>
+      <div class="save-note">教师姓名用于顶栏头像与备份设备名，稍后可在「设置」改。</div>
     </div>`,
     foot: `<button class="btn" id="ob-1">下一步</button>`
   });
@@ -250,11 +250,11 @@ async function maybeOnboard() {
 
   const s2 = wizardStep({
     title: '② 录名单',
-    lead: '把你的班级名单粘贴进来，每行一个姓名。之后随时可在「数据 → 管理名单」里增删。',
+    lead: '每行一个姓名；之后可在「数据 → 管理名单」增删。',
     body: `<div style="padding:16px">
       <textarea class="ta" id="ob-names" rows="6" placeholder="张梓涵&#10;李思远&#10;王雨欣"></textarea>
     </div>`,
-    foot: `<button class="btn ghost" id="ob-skip">暂时跳过</button><button class="btn" id="ob-2">导入名单</button>`
+    foot: `<button class="btn ghost" id="ob-skip">跳过</button><button class="btn" id="ob-2">导入名单</button>`
   });
   s2.ui.foot.querySelector('#ob-skip').onclick = () => s2.next();
   s2.ui.foot.querySelector('#ob-2').onclick = async () => {
@@ -275,7 +275,6 @@ async function maybeOnboard() {
       <div class="kv"><span>② 建议每周导出备份</span><b>手机会丢、系统会清</b></div>
       <div class="kv"><span>③ 期末归档存电脑/网盘</span><b>手机上不留旧数据</b></div>
       <div class="kv"><span>④ 要发给 AI 的内容</span><b>走「AI 评语素材」，姓名自动换成代号</b></div>
-      <div class="save-note">数据保存在本机浏览器，不会自动上传；清缓存或换设备前记得先导出备份。</div>
     </div>`,
     foot: `<button class="btn" id="ob-3">开始使用</button>`
   });

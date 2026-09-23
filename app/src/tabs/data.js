@@ -18,11 +18,11 @@ import { listSemesters, putSemester, ensureSemester, meta } from '../db/meta.js'
 import { listSnaps, getSnap, deleteSnap } from '../db/rescue.js';
 import { buildArchiveHTML, archiveFileName, fmtBytes } from '../archive.js';
 import { seedBaseline, WUYU, GUANZHU, CATEGORIES_SEED, TAGS_SEED } from '../db/seed.js';
-import { esc, toast, openPicker, emptyState, bindEmpty, confirm, syncSeg, onSeg, banner, closeBanner, showSheet, filterStudents } from '../ui.js';
+import { esc, toast, openPicker, emptyState, confirm, syncSeg, onSeg, banner, closeBanner, showSheet, filterStudents } from '../ui.js';
 import { download, blobToDataURL } from '../util.js';
 
 const SCHEMA_VERSION = 7;                 // 当前 schema 版本（V11.13：templates 移除 / images 去 del / 记录增复合索引）
-const APP_VER = 'v1.6.0';                 // 🔴 产品版本号（对外）：语义化递增，与 main.js 的 APP_VER 保持一致
+const APP_VER = 'v1.6.1';                 // 🔴 产品版本号（对外）：语义化递增，与 main.js 的 APP_VER 保持一致
 const PLAN_VER = 'V11.13';                // 🔴 方案版本号（内部，仅设置页可见）：与 dev/docs 里配对的方案文件同步，改功能才顺延
 
 // 🔴 存储口径三处统一：一个函数、不写死（§4.8.18 ①-4）
@@ -67,7 +67,7 @@ export async function buildExportPack() {
 // 🔴 P1-11：导出结束后如实告知丢了哪几张，别让备份「看起来成功、实际缺图」
 function warnImageErrors(pack) {
   const n = (pack && pack.imageErrors && pack.imageErrors.length) || 0;
-  if (n) banner('exportImgBanner', `⚠️ 本次导出有 <b>${n}</b> 张图片读不出来，备份里这几张是空的（<b>记录文字本身完整</b>）。可稍后重试导出。`, 'warn');
+  if (n) banner('exportImgBanner', `⚠️ 本次导出有 <b>${n}</b> 张图片读不出来（<b>记录文字完整</b>），可稍后重试导出。`, 'warn');
   return n;
 }
 
@@ -95,7 +95,7 @@ async function rescueCard() {
   if (!rescues.length) return '';
   return `<div class="card">
     <h2>⚠️ 抢救数据 <span class="muted" style="font-weight:400;font-size:12px">${rescues.length} 份</span></h2>
-    <div class="save-note" style="border:none;padding-top:0">这些是本应用某次<b>打开失败</b>时，尽力从本机库里捞出来的内容。可下载留存，或走导入流程合并回学期。</div>
+    <div class="save-note" style="border:none;padding-top:0">本应用<b>打开失败</b>时抢救出来的内容，可下载留存或导入合并。</div>
     <button class="btn ghost mt danger" id="dt-rescue-view">查看 / 下载抢救数据（${rescues.length} 份）</button>
   </div>`;
 }
@@ -104,7 +104,7 @@ async function rescueCard() {
 export function openSnapList(title, snaps, badge) {
   const p = openPicker({
     title,
-    lead: '以下快照存在本机。恢复时和导入备份一样逐条对比，不会直接覆盖你的现有数据。',
+    lead: '恢复时和导入一样逐条对比，不会直接覆盖现有数据。',
     body: `<div style="padding:12px 14px" id="sn-box">${snaps.length ? snaps.map(s => `
       <div class="li" data-key="${esc(s.key)}">
         <div style="flex:1;min-width:0">
@@ -200,11 +200,20 @@ export async function mount(scrollEl) {
     ${trashCard(deleted.length, students)}
     <div class="card">
       <h2>🩺 诊断 / 兜底</h2>
-      <div class="save-note" style="border:none;padding-top:0">同时打开多个标签页编辑时，<b>后保存的会覆盖先保存的</b> —— 请一次只开一个页面记记录。</div>
+      <div class="save-note" style="border:none;padding-top:0">一次只开一个页面记记录：多标签同时编辑会<b>互相覆盖</b>。</div>
       <button class="btn ghost mt" id="dt-settings">⚙️ 打开设置</button>
-      <div class="save-note">任何失败路径都<b>保留输入</b>并明确告知原因；无痕模式 / 存储被禁用时显示兜底页，绝不白屏。</div>
+      <div class="save-note">失败时<b>保留输入</b>并说明原因，不白屏。</div>
     </div>`;
 
+  // 🔴 「上次导出」：模板里留的空占位（#dt-last）一直没人填 ⇒ 老师看不到上次备份是什么时候，
+  //    而这正是备份卡最该回答的问题。数据源与页脚横幅一致（settings.lastExport）。
+  const lastEl = scrollEl.querySelector('#dt-last');
+  if (lastEl) {
+    const d = state.settings.lastExport;
+    lastEl.textContent = d
+      ? `上次导出：${new Date(d).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}`
+      : '本机还没有导出过备份 —— 建议现在就导一份。';
+  }
   scrollEl.querySelector('#dt-manage').onclick = () => openManage();
   scrollEl.querySelector('#dt-sem').onclick = () => openSemesters();
   // 🔴 归档 = 盖章 + 产两份文件，**零删除**（想省空间另点「清除本机副本」）
@@ -230,7 +239,6 @@ export async function mount(scrollEl) {
     const s = archived.find(x => x.id === b.dataset.clearCopy);
     if (s) clearSemesterCopy(s, render);
   });
-  bindEmpty(scrollEl, () => {});
 }
 
 /* ---------- 卡片 ---------- */
@@ -243,7 +251,7 @@ function manageCard(stuN, catN, tagN) {
       <div class="stat"><b>${catN}</b><span>分类数</span></div>
     </div>
     <button class="btn ghost mt" id="dt-manage">管理名单 / 分类 / 标签库</button>
-    <div class="save-note">数据从这里进来：批量粘贴（每行一个）/ 手加 / 导入。<b>转出</b>表示学生已离开本班：他不再出现在「选学生 / 收缴点名 / 未记录待办」里，成长记录<b>全部保留</b>作纪念，在这里可随时转回。拼音首字母自动生成，不对就点它手工修正。分类与标签均可增删改名。</div>
+    <div class="save-note">批量粘贴（每行一个）/ 手加 / 导入。<b>转出</b> = 学生离开本班：不再出现在选人、收缴、待办里，记录<b>全部保留</b>，可随时转回。</div>
   </div>`;
 }
 function semesterCard(sto) {
@@ -253,7 +261,7 @@ function semesterCard(sto) {
     <div class="kv"><span>记录 / 图片 / 占用</span><b>${sto.recN} 条 · ${sto.imgN} 张 · ${fmtMB(sto.total)}</b></div>
     <button class="btn ghost mt" id="dt-sem">切换 / 管理学期</button>
     <button class="btn danger mt" id="dt-archive">归档本学期（生成归档文件）</button>
-    <div class="save-note">一学期一库；新建默认继承在册名单 + 分类 + 标签库，<b>不继承</b>记录 / 图片 / 课表 / 收缴。<b>归档只生成文件、不动本机数据</b>；要省空间，归档后再到档案柜点「清除本机副本」。</div>
+    <div class="save-note">一学期一库。新建继承名单、分类、标签，<b>不继承</b>记录与图片。<b>归档只生成文件、不动本机数据</b>。</div>
   </div>`;
 }
 function backupCard() {
@@ -262,16 +270,16 @@ function backupCard() {
     <button class="btn" id="dt-backup">导出备份（全量含图）</button>
     <button class="btn ghost mt" id="dt-import">导入备份（逐条裁决）</button>
     <div class="save-note" id="dt-last"></div>
-    <div class="save-note">这是<b>数据备份</b>（JSON，含图片，可原样导入恢复），不是给家长看的成长记录文本 —— 后者在下面「📄 成长记录文本」。</div>
-    <div class="save-note">🛡️ <b>万一哪天打不开</b>：先别清数据。打开<a href="./recover.html">数据导出页</a> —— 它不依赖应用代码，能把本机内容直接存成文件（含图片），存好之后再考虑是否重建。</div>
-    <div class="save-note danger"><b>换网址 = 数据全丢</b>：本机所有数据存在浏览器里、绑定当前网址（域名+协议+端口）。一旦更换网址（换域名 / http 改 https / 改端口 / 重新发布拿到新地址），旧网址下的全部历史数据将无法读取、彻底消失。本机自动快照与抢救库也在同一网址下，<b>同样救不回</b>。因此「导出备份」是<b>唯一能跨网址带走数据</b>的方式——<b>每次部署新网址前，务必先在此导出一份 JSON 存好，再到新网址导入</b>。</div>
+    <div class="save-note"><b>JSON 备份</b>（含图片、可原样导入恢复），<b>不是给家长看的成长记录文本</b> —— 后者在下面「📄 成长记录文本」。</div>
+    <div class="save-note">🛡️ <b>打不开时别清数据</b>：先用<a href="./recover.html">数据导出页</a>把内容存成文件（它不依赖应用代码）。</div>
+    <div class="save-note danger"><b>换网址 = 数据全丢</b>：数据绑定当前网址（域名 + 协议 + 端口），换网址后旧数据读不到，抢救库也救不回。导出备份是<b>唯一能跨网址带走数据</b>的方式 —— <b>部署新网址前先导出一份</b>。</div>
   </div>`;
 }
 function textCard() {
   return `<div class="card">
     <h2>📄 成长记录文本 <span class="muted" style="font-weight:400;font-size:12px">（实名 · 留本机）</span></h2>
     <button class="btn" id="dt-text">生成成长记录文本</button>
-    <div class="save-note">给人看的文字材料：一份<b>实名</b>的成长记录，可打印、给家长、存档；<b>不含照片本身</b>、不含成绩。和上面的备份是两回事 —— 备份是机器可读、可导入恢复的 JSON，这份是纯文本，只读不回填。要发给 AI 请用「分析 → AI 评语素材」。</div>
+    <div class="save-note">给人看的<b>实名</b>成长记录，可打印 / 给家长 / 存档，<b>不含照片与成绩</b>；纯文本，<b>只读不回填</b>。要发给 AI 请用「分析 → AI 评语素材」。</div>
   </div>`;
 }
 function cabinetCard(archived) {
@@ -288,7 +296,7 @@ function cabinetCard(archived) {
           <div class="fn">📄 ${esc(f.json || s.archivedFileName || '未记录文件名')}</div>
           <div class="fn">🌐 ${esc(f.html || '未记录文件名')}</div>
           <div class="fn">${s.status === 'cleared'
-            ? `本机数据已于 ${s.clearedAt ? new Date(s.clearedAt).toLocaleDateString('zh-CN') : '—'} 清除（归档文件应已存在你的电脑 / 网盘上）`
+            ? `本机数据已于 ${s.clearedAt ? new Date(s.clearedAt).toLocaleDateString('zh-CN') : '—'} 清除`
             : `本机副本：保留中${size ? ' · ' + size : ''}`}</div>
         </div>
         <div style="display:flex;flex-direction:column;gap:6px">
@@ -296,14 +304,14 @@ function cabinetCard(archived) {
         </div>
       </div>`;
     }).join('') : emptyState('还没有归档学期', '')}</div>
-    <div class="save-note">归档会生成两份文件：<b>.json</b> 是可导入恢复的备份，<b>.html</b> 是双击就能只读查看的报告（含图）。两份都请存到电脑或网盘 —— 那是唯一能跨设备带走数据的方式。</div>
+    <div class="save-note">归档生成两份文件：<b>.json</b> 可导入恢复，<b>.html</b> 双击即可只读查看（含图）。请存到电脑或网盘。</div>
   </div>`;
 }
 function trashCard(n) {
   return `<div class="card">
     <h2>🗑️ 回收站 <span class="muted" style="font-weight:400;font-size:12px">${n} 条 · 保留 ${state.settings.recycleDays || 30} 天</span></h2>
     <button class="btn ghost" id="dt-trash">查看 / 恢复 / 清空</button>
-    <div class="save-note">回收站里的记录图片会保留（恢复时还要用）；彻底删除或清空后，多余图片才会被清理。</div>
+    <div class="save-note">回收站里的图片会保留；彻底删除或清空后才会被清理。</div>
   </div>`;
 }
 
@@ -456,7 +464,7 @@ async function drawCats(box) {
         <button class="mini" data-rename="${esc(c.id)}">改名</button>
         ${c.id === 'cat_gz' ? '<span class="muted" style="font-size:11px">受保护</span>' : `<button class="mini danger" data-delcat="${esc(c.id)}" data-cfm="0">删除</button>`}
       </div>`).join('')}</div>
-    <div class="save-note">「关注」是内部观察分类，<b>不可删除</b>（改名可以）；其它分类可自由增删。删除分类会一并移除其下标签。</div>`;
+    <div class="save-note">「关注」不可删（可改名）；其它分类可增删，删分类会一并移除其下标签。</div>`;
 
   box.querySelector('#cat-add').onclick = async () => {
     const name = box.querySelector('#cat-name').value.trim();
@@ -520,7 +528,7 @@ async function drawTags(box) {
           <button class="mini danger" data-deltag="${esc(t.id)}" data-cfm="0">删除</button>
         </div>
       </div>`).join('')}</div>
-    <div class="save-note">删除标签后<b>历史记录仍显示原标签名</b>。同分类下禁止同名。「改评语」编辑的是<b>选标签时自动填入的预设评语</b>（设置里开启才自动填），改完立即生效。</div>`;
+    <div class="save-note">删除标签后<b>历史记录仍显示原标签名</b>，同分类禁止同名。「改评语」改的是选标签时自动填入的预设评语。</div>`;
 
   box.querySelector('#tg-add').onclick = async () => {
     const name = box.querySelector('#tg-name').value.trim();
@@ -549,7 +557,7 @@ function editPresetComment(t) {
   if (!t) return;
   const p = openPicker({
     title: '改预设评语',
-    lead: `「${t.name}」被选中且开启“自动填预设评语”时，会填入下面这段。留空则自动填一小句通用评语。`,
+    lead: `「${t.name}」被选中且开着“自动填预设评语”时会填入这段；留空则自动填一小句通用评语。`,
     body: `<div style="padding:14px 16px">
       <textarea class="ta" id="cmt-ta" rows="4" placeholder="如：能独立完成布置的任务，值得肯定。">${esc(t.presetComment || '')}</textarea>
     </div>`,
@@ -569,7 +577,7 @@ function editPresetComment(t) {
 export function openSemesters() {
   const p = openPicker({
     title: '学期管理',
-    lead: '一学期一库。新建默认继承在册名单 + 分类 + 标签库；记录 / 图片 / 课表 / 收缴不继承。',
+    lead: '一学期一库。新建继承名单、分类、标签；记录 / 图片 / 课表 / 收缴不继承。',
     body: '<div style="padding:12px 14px" id="sm-box"></div>',
     foot: `<button class="btn ghost" data-pclose>关闭</button><button class="btn" id="sm-new">＋ 新建学期</button>`
   });
@@ -661,7 +669,7 @@ async function doArchive() {
   toast('已归档：两份文件已下载，请存到电脑或网盘');
   warnImageErrors(pack);                        // 🔴 若有图没带上，如实告知（归档包同样要可信）
   banner('archiveBanner',
-    `📚 「${esc(sem?.name || '本学期')}」已归档。请把刚下载的两份文件（<b>.json</b> 备份 / <b>.html</b> 只读报告）存到电脑或网盘 —— 那是唯一能跨设备带走数据的方式。要省空间，可到「归档档案柜」点「清除本机副本」。`,
+    `📚 「${esc(sem?.name || '本学期')}」已归档。两份文件（<b>.json</b> 备份 / <b>.html</b> 报告）请存到电脑或网盘；要省空间可到档案柜「清除本机副本」。`,
     'warn');
   // 归档只是盖章：本机数据照旧，只是要换个学期继续记录
   const sems = await listSemesters();
@@ -683,8 +691,8 @@ function clearSemesterCopy(s, render) {
   confirm({
     title: '清除本机副本', danger: true,
     // 🔴 msg 走 esc 渲染（不解析 HTML）⇒ 这里用纯文本 + 换行，不要写 <b> / <br>
-    msg: `将删除本机「${s.name}」这个学期的全部数据（记录 / 图片 / 名单），以释放空间。\n\n`
-      + `此操作不可恢复 —— 清除后本应用不再认识这个学期，也无法取消。\n\n`
+    msg: `将删除本机「${s.name}」的全部数据（记录 / 图片 / 名单）。\n\n`
+      + `此操作不可恢复 —— 清除后本应用不再认识这个学期。\n\n`
       + `请先确认两份归档文件已在电脑或网盘上：\n· ${jn}\n· ${hn}`,
     okText: '文件已在手，清除',
     onOk: async () => {
@@ -708,7 +716,6 @@ function openImport() {
     body: `<div style="padding:14px 16px">
       <div class="drop" id="im-drop">点击选择备份文件（.json）<input type="file" id="im-file" accept="application/json" style="display:none"></div>
       <div class="err" id="im-err"></div>
-      <div id="im-info"></div>
     </div>`,
     foot: `<button class="btn" data-pclose>关闭</button>`
   });
@@ -760,7 +767,7 @@ export async function openImportPack(pack) {
     <p class="muted" style="margin:8px 0">${kind === 'A' ? '与当前学期一致 → 走逐条对比合并，绝不默认覆盖'
       : reject ? '该学期已在本机且数据仍在（含已归档）→ 不能导入覆盖'
       : '本机没有该学期的数据 → 新建学期并导入全部'}</p>
-    ${reject ? `<div class="save-note danger">该学期在本机已有数据，不能被导入覆盖。<b>已归档的学期不在本应用内打开</b> —— 要看它就打开归档的 .html 报告。若确需在这台设备上恢复它，请先到档案柜清除本机副本；清除后本机不再有该学期，这份备份即可导入。</div>`
+    ${reject ? `<div class="save-note danger">该学期本机已有数据，不能导入覆盖。<b>已归档的学期不在本应用内打开</b>；确需恢复请先到档案柜「清除本机副本」。</div>`
       : `<button class="btn" id="im-go">下一步：查看差异</button>`}`;
   const goBtn = p.body.querySelector('#im-go');
   if (goBtn) goBtn.onclick = () => showDiff(pack, kind, p);
@@ -901,7 +908,7 @@ async function saveSchedSafe(db, sched) {
 function openTrash() {
   const p = openPicker({
     title: '回收站',
-    lead: `软删除的记录保留 ${state.settings.recycleDays || 30} 天，期间可恢复；彻底删除后图片也会清理。`,
+    lead: `软删记录保留 ${state.settings.recycleDays || 30} 天，可恢复；彻底删除后图片也会清理。`,
     body: '<div style="padding:12px 14px" id="tr-box"></div>',
     foot: `<button class="btn danger" id="tr-purge">清空回收站</button><button class="btn" data-pclose>完成</button>`
   });
@@ -948,14 +955,14 @@ function openTrash() {
 function showPhotoRule() {
   openPicker({
     title: '拍摄规范（只拍物，不拍人）',
-    lead: '照片一旦拍进来就留在本机，也可能被你不小心转发出去。',
+    lead: '照片拍进来就留在本机，也可能被误转发。',
     body: `<div style="padding:14px 16px">
       <div class="sec" style="margin-top:0">✅ 可以拍</div>
       <div class="save-note" style="border:none">${PHOTO_OK.map(x => '· ' + esc(x)).join('<br>')}</div>
       <div class="sec">❌ 不要拍</div>
       <div class="save-note" style="border:none">${PHOTO_BAN.map(x => '· ' + esc(x)).join('<br>')}</div>
-      <div class="save-note">💡 <b>主体合规不等于照片合规</b>：作业拍得好，但背景里有座位表、或角落露出别人的姓名，同样不能外发。拍之前先看一眼取景框。</div>
-      <div class="save-note">需要让 AI 了解画面内容时，用一句文字转述即可（如「手抄报排版工整、配色协调」），不必把照片发出去。</div>
+      <div class="save-note">💡 <b>主体合规不等于照片合规</b>：背景有座位表、角落露出姓名，同样不能外发。</div>
+      <div class="save-note">要让 AI 了解画面，写一句文字即可（如「手抄报排版工整」），不必发照片。</div>
     </div>`,
     foot: `<button class="btn" data-pclose>知道了</button>`
   });
@@ -979,14 +986,14 @@ export async function openSettings() {
       <div class="set-item">
         <div class="si-lb"><span>设备名</span><em>用于识别本机备份（自动生成，无需填写）</em></div>
         <div class="kv" style="margin:4px 0 2px"><b id="st-dev-now">${esc(effectiveDeviceName(sched))}</b></div>
-        <div class="save-note" style="border:none;padding-top:6px">由「<b>本班班级 + 教师姓名</b>」自动生成：在上方改教师姓名、或在班务「授课班级」改本班名，这里会同步变化。这个名字写进导出的备份文件，方便区分是哪台手机备的。</div>
+        <div class="save-note" style="border:none;padding-top:6px">由「<b>本班班级 + 教师姓名</b>」自动生成，改这两处会同步变化。它会写进备份文件名，方便区分是哪台手机。</div>
       </div>
 
       <div class="sec">👓 无障碍</div>
       <div class="set-item">
         <div class="si-lb"><span>字号</span><em id="st-fs-hint">标准 · 正文 15px</em></div>
         <div class="seg" id="st-fs"><button data-v="std">标准</button><button data-v="big">大</button><button data-v="huge">超大</button></div>
-        <div class="save-note" style="border:none;padding-top:6px">改动<b>立即生效</b>，无需重启。小学老师年龄跨度大，属无障碍刚需。</div>
+        <div class="save-note" style="border:none;padding-top:6px">改动<b>立即生效</b>，无需重启。</div>
       </div>
 
       <div class="sec">⚡ 记录效率</div>
@@ -1015,7 +1022,7 @@ export async function openSettings() {
       <div class="set-item">
         <div class="si-lb"><span>班级课表单双周</span><em>开启后按单/双周轮换课表</em></div>
         <div class="seg" id="st-weeksplit"><button data-v="off" class="${S.classWeekSplit !== 'on' ? 'on' : ''}">不分（统一课表）</button><button data-v="on" class="${S.classWeekSplit === 'on' ? 'on' : ''}">分单双周</button></div>
-        <div class="save-note" style="border:none;padding-top:6px">开启后，本班课表维护<b>单周 / 双周</b>两套，今日课表按当前周次自动显示对应那套；周课表编辑时可切换。</div>
+        <div class="save-note" style="border:none;padding-top:6px">本班课表分<b>单 / 双周</b>两套，今日课表按当前周次自动切换。</div>
       </div>
 
       <div class="sec">🛡️ 数据保护</div>
@@ -1029,7 +1036,7 @@ export async function openSettings() {
         <div class="seg" id="st-keep"><button data-v="30">保留 30 天</button><button data-v="60">保留 60 天</button></div>
       </div>
       <div class="set-item">
-        <div class="si-lb"><span>存储占用明细</span><em id="st-sto-hint">—</em></div>
+        <div class="si-lb"><span>存储占用明细（估算）</span><em id="st-sto-hint">—</em></div>
         <div class="barsto" id="st-bar"><i class="r" style="width:0%"></i><i class="i" style="width:0%"></i><i class="o" style="width:0%"></i></div>
         <div class="lgd"><span class="r">记录 <b id="st-sto-rec">—</b></span><span class="i">图片 <b id="st-sto-img">—</b></span><span class="o">其他 <b id="st-sto-oth">—</b></span></div>
       </div>
@@ -1042,12 +1049,12 @@ export async function openSettings() {
       <div class="set-item">
         <div class="si-lb"><span>照片入库必须确认</span><em>勾选「画面已确认」后才能保存带图记录</em></div>
         <div class="seg sm" id="st-pguard"><button data-v="on">开（推荐）</button><button data-v="off">关</button></div>
-        <div class="save-note" style="border:none;padding-top:6px">照片入库时会自动去掉拍摄位置等元信息（EXIF）；但画面里本来就有的人脸、姓名、名单不会被自动识别，所以要你亲眼确认一次。</div>
+        <div class="save-note" style="border:none;padding-top:6px">入库自动去掉位置等元信息（EXIF）；人脸、姓名、名单不会被自动识别，需你亲眼确认。</div>
       </div>
       <div class="set-item">
         <div class="si-lb"><span>AI 素材日期精度</span><em>外发给 AI 时日期保留到什么程度</em></div>
         <div class="seg sm" id="st-aidate"><button data-v="month">只到月</button><button data-v="full">保留完整</button></div>
-        <div class="save-note" style="border:none;padding-top:6px">精确到某天 + 具体事件，容易定位到具体学生。默认只到月，够 AI 判断先后顺序。</div>
+        <div class="save-note" style="border:none;padding-top:6px">精确到天容易定位到具体学生；默认只到月。</div>
       </div>
       <div class="set-item">
         <div class="kv" style="border:none;padding:0 0 6px"><span>拍摄规范</span><b>只拍物、不拍人</b></div>
@@ -1055,19 +1062,19 @@ export async function openSettings() {
       </div>
       <div class="set-item">
         <div class="kv" style="border:none;padding:0 0 6px"><span>会离开本设备的</span><b>只有你自己复制的 AI 素材</b></div>
-        <div class="save-note" style="border:none">学生与记录只存在这台设备里，应用不联网、不上传。<b>AI 评语素材</b>是唯一的外发通道：姓名换成一次性代号，分数、名次、具体日期与他人姓名都会被隐去，照片一张都不参与。</div>
+        <div class="save-note" style="border:none">数据只存在这台设备，应用不联网、不上传。<b>AI 评语素材</b>是唯一外发口：姓名换代号召，分数、名次、日期、他人姓名隐去，照片不参与。</div>
       </div>
-      <div class="save-note">未满 14 周岁学生的信息属《个人信息保护法》第 28 条中的<b>敏感个人信息</b>，教师不能代替学生对外授权；是否外发、发给谁，请你按学校要求与自己的判断决定。</div>
+      <div class="save-note">未满 14 周岁的信息属《个人信息保护法》第 28 条<b>敏感个人信息</b>，教师不能代替学生对外授权；是否外发由你按学校要求判断。</div>
 
       <div class="sec">📱 学期与存储</div>
       <div class="kv"><span>当前学期</span><b>${esc(state.semester?.name || '—')}</b></div>
       <div class="kv"><span>存储持久化</span><span class="pill ${S.persisted ? 'yes' : 'no'}" id="st-persist">${S.persisted ? '已授权' : '未授权'}</span></div>
       <button class="btn ghost mt" id="st-req">${persistSupported() ? '申请持久化权限' : '如何让数据更安全'}</button>
       <div class="save-note" id="st-persist-note" style="margin-top:8px">${S.persisted
-        ? '已获长期保存授权：浏览器清理本地数据时不会连同本应用一起回收。'
+        ? '已获长期保存授权，浏览器清理时不会回收本应用数据。'
         : (persistSupported()
-          ? '未获授权时，浏览器在存储紧张时可能回收本应用的数据。点上方按钮可申请长期保存权限。'
-          : '本机浏览器未提供「长期保存」开关。把本应用装到主屏后，系统会按独立应用长期保存。')}</div>
+          ? '未授权：存储紧张时浏览器可能回收本应用数据，点上方按钮申请。'
+          : '本机不支持「长期保存」。装到主屏后系统会按独立应用保存。')}</div>
 
       <div class="sec">ℹ️ 关于</div>
       <div class="kv"><span>版本 / Build</span><b>${APP_VER}</b></div>
@@ -1075,8 +1082,8 @@ export async function openSettings() {
       <div class="kv"><span>隐私模式</span><b>本机离线 · 数据不出设备</b></div>
       <div class="kv"><span>Origin</span><b style="word-break:break-all">${esc(window.location?.origin || '—')}</b></div>
       <button class="btn ghost mt" id="st-clear">🔄 刷新到最新版（不触业务数据）</button>
-      <div class="save-note" style="margin-top:8px">手机上不像电脑能按「强制刷新」。更新了应用却没看到新功能时，点上面这个按钮即可——它会清掉本地缓存、注销旧版离线脚本、再重新加载页面。<b>已保存的名单与记录不受影响。</b></div>
-      <div class="save-note" style="margin-top:12px">💡 <b>所有改动自动保存</b>，无需单独点“保存”按钮——每次调整都会立即写入本机。</div>
+      <div class="save-note" style="margin-top:8px">更新后没看到新功能，就点上面这个按钮：清缓存、注销旧版离线脚本、重新加载。<b>已保存的名单与记录不受影响。</b></div>
+      <div class="save-note" style="margin-top:12px">💡 <b>所有改动自动保存</b>，无需点“保存”。</div>
     </div>`,
     foot: `<button class="btn" data-pclose>关闭</button>`
   });
@@ -1092,6 +1099,14 @@ export async function openSettings() {
   syncSeg(p.body.querySelector('#st-weeksplit'), S.classWeekSplit || 'off');
   syncSeg(p.body.querySelector('#st-pguard'), S.photoGuard === 'off' ? 'off' : 'on');
   syncSeg(p.body.querySelector('#st-aidate'), S.aiDateGrain === 'full' ? 'full' : 'month');
+
+  // 🔴 「备份提醒」右侧的说明此前只有一个永远显示「—」的空占位：同一排的「字号」「存储占用」
+  //    都有更新代码，唯独它没有 ⇒ 老师看不到「该不该备份了」。数据源与页脚备份横幅同一处（lastExport）。
+  const bkHint = p.body.querySelector('#st-bk-hint');
+  if (bkHint) {
+    const d = S.lastExport ? Math.floor((Date.now() - S.lastExport) / 86400000) : null;
+    bkHint.textContent = d == null ? '还没有导出过备份' : (d === 0 ? '今天备份过' : `距上次备份 ${d} 天`);
+  }
 
   const fsHint = { std: '标准 · 正文 15px', big: '大 · 正文 17px', huge: '超大 · 正文 19px' };
   p.body.querySelector('#st-fs-hint').textContent = fsHint[S.fontSize || 'std'];
@@ -1130,10 +1145,10 @@ export async function openSettings() {
   //    ——旧版正是如此：Safari（iOS）根本没有该接口，点了彻底空转。
   const persistLabel = ok => (ok ? '已授权' : '未授权');
   const persistNote = ok => ok
-    ? '已获长期保存授权：浏览器清理本地数据时不会连同本应用一起回收。'
+    ? '已获长期保存授权，浏览器清理时不会回收本应用数据。'
     : (persistSupported()
-      ? '未获授权时，浏览器在存储紧张时可能回收本应用的数据。点上方按钮可申请长期保存权限。'
-      : '本机浏览器未提供「长期保存」开关。把本应用装到主屏后，系统会按独立应用长期保存。');
+      ? '未授权：存储紧张时浏览器可能回收本应用数据，点上方按钮申请。'
+      : '本机不支持「长期保存」。装到主屏后系统会按独立应用保存。');
   const refreshPersistUI = () => {
     const ok = !!state.settings.persisted;
     const pill = p.body.querySelector('#st-persist');
@@ -1151,9 +1166,9 @@ export async function openSettings() {
         <div class="sec" style="margin-top:0">📲 装到主屏（最有效）</div>
         <div class="li"><div style="flex:1;min-width:0"><div class="nm">安卓（Chrome / Edge）</div><div class="meta">点浏览器右上角菜单 → 「安装应用」或「添加到主屏幕」</div></div></div>
         <div class="li"><div style="flex:1;min-width:0"><div class="nm">iPhone / iPad（Safari）</div><div class="meta">点底部「分享」 → 「添加到主屏幕」</div></div></div>
-        <div class="save-note" style="border:none;padding-top:8px">装到主屏后，浏览器会把它当成独立应用，本机数据一般不再被当作临时缓存回收。</div>
+        <div class="save-note" style="border:none;padding-top:8px">装到主屏后浏览器按独立应用对待，数据一般不再被当临时缓存回收。</div>
         <div class="sec">🛡️ 没有授权也不影响恢复</div>
-        <div class="save-note" style="border:none;padding-top:6px">应用每次打开都会在本机自动留一份快照，配合定期导出的备份文件，即使存储被系统回收也能恢复。<b>换手机、清缓存前先导出备份。</b></div>
+        <div class="save-note" style="border:none;padding-top:6px">定期导出的备份文件就是唯一的保险。<b>换手机、清缓存前先导出备份。</b></div>
       </div>`,
       foot: `${canInstall() ? '<button class="btn ghost" id="ph-install">📲 添加到主屏</button>' : ''}<button class="btn" data-close>知道了</button>`
     });
@@ -1189,24 +1204,32 @@ export async function openSettings() {
     } catch (_) {}
     setTimeout(() => { try { window.location.reload(); } catch (_) {} }, 600);
   };
-  storageBreakdown().then(async s => {
-    p.body.querySelector('#st-sto-hint').textContent = `合计 ${fmtMB(s.total)}`;
-    const t = Math.max(0.01, s.total);
-    const bar = p.body.querySelector('#st-bar');
-    bar.children[0].style.width = (s.rec / t * 100) + '%';
-    bar.children[1].style.width = (s.img / t * 100) + '%';
-    bar.children[2].style.width = (s.oth / t * 100) + '%';
-    p.body.querySelector('#st-sto-rec').textContent = fmtMB(s.rec);
-    p.body.querySelector('#st-sto-img').textContent = fmtMB(s.img);
-    p.body.querySelector('#st-sto-oth').textContent = fmtMB(s.oth);
-    const del = await listDeleted(state.db);
-    p.body.querySelector('#st-trash-cnt').textContent = del.length + ' 条';
-    const orphans = await orphanImages(state.db);
-    p.body.querySelector('#st-orphan').textContent = orphans.length + ' 张';
-    p.body.querySelector('#st-clean').onclick = async () => {
+  // 🔴 占用明细与回收站计数都是异步读取：此前这整段写在 .then 里且没有 catch ——
+  //    任何一步抛错都会让「清理多余图片」**永远绑不上事件**（点了没反应），而这不是老师能自救的状态。
+  //    现在：读取失败只是数字留空，按钮始终可用。
+  (async () => {
+    let orphans = [];
+    try {
+      const s = await storageBreakdown();
+      p.body.querySelector('#st-sto-hint').textContent = `约 ${fmtMB(s.total)}`;
+      const t = Math.max(0.01, s.total);
+      const bar = p.body.querySelector('#st-bar');
+      bar.children[0].style.width = (s.rec / t * 100) + '%';
+      bar.children[1].style.width = (s.img / t * 100) + '%';
+      bar.children[2].style.width = (s.oth / t * 100) + '%';
+      p.body.querySelector('#st-sto-rec').textContent = fmtMB(s.rec);
+      p.body.querySelector('#st-sto-img').textContent = fmtMB(s.img);
+      p.body.querySelector('#st-sto-oth').textContent = fmtMB(s.oth);
+      const del = await listDeleted(state.db);
+      p.body.querySelector('#st-trash-cnt').textContent = del.length + ' 条';
+      orphans = await orphanImages(state.db);
+      p.body.querySelector('#st-orphan').textContent = orphans.length + ' 张';
+    } catch (_) { /* 读不到明细不影响其它设置项 */ }
+    const cleanBtn = p.body.querySelector('#st-clean');
+    if (cleanBtn) cleanBtn.onclick = async () => {
       if (!orphans.length) { toast('没有多余图片'); return; }
       for (const o of orphans) await deleteImage(state.db, o.imageId);
       toast(`已清理 ${orphans.length} 张多余图片`); p.close();
     };
-  });
+  })();
 }

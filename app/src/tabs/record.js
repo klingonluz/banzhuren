@@ -65,7 +65,7 @@ function quickCard() {
       <label>评语</label>
       <textarea id="q-text" rows="3" placeholder="选标签自动填预设评语，可微调"></textarea>
       <div class="draft" id="q-draft"></div>
-      <div class="draft" id="q-rule"></div>
+      <div class="draft rule" id="q-rule"></div>
     </div>
 
     <div class="field">
@@ -79,7 +79,7 @@ function quickCard() {
     </div>
 
     <div class="field">
-      <label>图片（非必要不拍 · 只拍作品不拍人）</label>
+      <label>图片（非必要不拍）</label>
       <div class="row" style="gap:8px">
         <button class="btn ghost tiny" id="q-cam">📷 拍照</button>
         <button class="btn ghost tiny" id="q-alb">🖼️ 相册</button>
@@ -89,17 +89,17 @@ function quickCard() {
         <div class="pr-hd">📸 只拍物，不拍人</div>
         <div class="pr-row"><b>✅ 可以拍</b>${PHOTO_OK.map(x => esc(x)).join(' · ')}</div>
         <div class="pr-row"><b>❌ 不要拍</b>${PHOTO_BAN.map(x => esc(x)).join(' · ')}</div>
-        <div class="pr-ft">入库会自动去掉拍摄位置等元信息；画面里本来就有的内容（人脸、姓名、名单）不会被自动识别，请在按下快门前就避开。</div>
+        <div class="pr-ft">元信息已自动去掉；人脸、姓名、名单不会被自动识别。</div>
       </div>
       <input type="file" id="q-cam-in" accept="image/*" capture="environment" style="display:none">
       <input type="file" id="q-alb-in" accept="image/*" multiple style="display:none">
       <div class="imgs" id="q-imgs"></div>
-      <label class="pdok" id="q-pdok" style="display:none"><input type="checkbox" id="q-pdchk"><span>画面已确认：无学生人脸 · 无他人姓名 / 署名 · 背景没有名单、座位表、成绩表</span></label>
+      <label class="pdok" id="q-pdok" style="display:none"><input type="checkbox" id="q-pdchk"><span>画面已确认：无人脸 · 无他人署名 · 背景无名单 / 座位表</span></label>
       <div class="draft" id="q-phototip"></div>
     </div>
 
     <button class="btn mt" id="q-save">保存</button>
-    <div class="save-note">删除或改名标签，不影响已保存的成长记录。评语与「图片说明」都会随记录保存；只有你自己复制的「AI 评语素材」会离开本设备，且已脱敏。</div>
+    <div class="save-note">标签增删改名不影响已保存的记录。只有你复制的「AI 评语素材」会离开本设备，且已脱敏。</div>
   </div>`;
 }
 
@@ -213,7 +213,7 @@ function renderImgs() {
   if (chk && !form.imgs.length) chk.checked = false;      // 图都删了 → 需要重新确认
   const tip = document.getElementById('q-phototip');
   if (tip) tip.textContent = form.imgs.length
-    ? `已选 ${form.imgs.length} 张 · 入库已自动去掉拍摄位置等元信息；下面的「图片说明」会随记录保存并进入 AI 素材（照片本身不参与）${form.imgs.length >= 3 ? '；建议少拍，占内存' : ''}`
+    ? `已选 ${form.imgs.length} 张 · 「图片说明」会进 AI 素材（照片不进）${form.imgs.length >= 3 ? ' · 建议少拍，占内存' : ''}`
     : '';
 }
 async function pickImages(files) {
@@ -320,7 +320,7 @@ function openUnrec(unrec) {
   const keys = Object.keys(groups).sort();
   const p = openPicker({
     title: `未记录学生（${unrec.length} 人）`,
-    lead: '这些学生本学期还没有任何成长记录。<b>点任意一行即可跳去记录页</b>给他们补一条——这是行动清单，不是虚荣数字。',
+    lead: '本学期还没记录。<b>点任意一行即可去补一条</b>。',
     body: unrec.length ? keys.map(k => `
       <div class="sec-hd" style="padding:8px 16px 4px;background:#f4f6f4">${esc(k)}</div>
       ${groups[k].map(s => `<div class="unrec-row" data-go="${s.id}" style="margin:0 12px"><span class="nm">${esc(s.name)}</span><span class="muted">去记录 →</span></div>`).join('')}`).join('')
@@ -477,7 +477,7 @@ export async function mount(scrollEl) {
   redrawStu();
 
   // 🔴 记录端规范（§2.12 D 源头治理）：在「写」的这一刻提醒，而不是事后打码
-  const RULE_TIP = '评语不写：真实姓名（本人或同学）· 分数 · 名次 · 家庭隐私。建议写「行为 + 影响」（如「主动帮助同学讲解，对方有明显进步」），把同学写成「同桌 / 同伴 / 小组」。';
+  const RULE_TIP = '不写真实姓名 · 分数 · 名次 · 家庭隐私；句式用「行为 + 影响」。';
   const ruleEl = scrollEl.querySelector('#q-rule');
   if (ruleEl) ruleEl.textContent = RULE_TIP;
   const lint = () => {
@@ -485,7 +485,7 @@ export async function mount(scrollEl) {
     const self = nmap[form.stu] || '';
     const descs = form.imgs.map(im => im.desc || '').filter(Boolean);
     const tips = lintText([qText.value, ...descs].join('\n'), allNames.filter(n => n !== self));
-    if (!tips.length) { ruleEl.className = 'draft'; ruleEl.textContent = RULE_TIP; return; }
+    if (!tips.length) { ruleEl.className = 'draft rule'; ruleEl.textContent = RULE_TIP; return; }
     ruleEl.className = 'draft warn';
     ruleEl.innerHTML = tips.map(t => '⚠️ ' + esc(t.tip)).join('<br>');
   };

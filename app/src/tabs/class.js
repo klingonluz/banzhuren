@@ -157,13 +157,13 @@ function scheduleCard(sched) {
       <button data-v="mine" class="${schedMode === 'mine' ? 'on' : ''}">我的课表</button>
     </div>
     ${schedMode === 'class'
-      ? `<div class="muted" style="margin:6px 0 2px">本班（${esc(sched.homeroom?.name || '本班')}）课表：班主任只负责本班，直接编辑即可，无需选择班级。${useSplit() ? `当前显示<b>${weekParityLabel()}</b>课表（设置已开启单双周）。` : ''}</div>`
-      : `<div class="muted" style="margin:6px 0 2px">自行填写，空格子 = 该节没有我的课；每节课点一下填<b>科目</b>并选<b>班级</b>（跨班任教时每节选对应班）。</div>`}
+      ? `<div class="muted" style="margin:6px 0 2px">本班（${esc(sched.homeroom?.name || '本班')}）课表，直接编辑即可。${useSplit() ? `当前显示<b>${weekParityLabel()}</b>课表。` : ''}</div>`
+      : `<div class="muted" style="margin:6px 0 2px">空格子 = 该节没我的课；点格子填<b>科目</b>和<b>班级</b>。</div>`}
     <div id="cl-today">${todayListHTML(sched)}</div>
     ${schedMode === 'mine' ? `<button class="btn ghost mt" id="cl-classes">🏫 授课班级（跨班）</button>` : ''}
     <button class="btn ghost mt" id="cl-week">查看 / 编辑${schedMode === 'mine' ? '我的课表' : '本班课表'}</button>
     <button class="btn ghost mt" id="cl-sched">作息时间表（可编辑）</button>
-    <div class="save-note">课表按节次排列，增删节次不会让课程错位；切换夏/冬作息，<strong>课程不变、时间自动跟随</strong>。「本班课表」即你担任班主任的那个班，单一固定；「我的课表」是一张<b>空表</b>，与各班课表独立：自己填科目、在该节选对应班级（跨班任教需先在「授课班级」添加所教班级）。</div>
+    <div class="save-note">切换夏/冬作息，<strong>课程不变、时间自动跟随</strong>。本班课表 = 你当班主任的那个班（固定）；「我的课表」是<b>空表</b>，自己填科目与班级。</div>
   </div>`;
 }
 
@@ -231,7 +231,7 @@ function openWeek(db, sched, rerender) {
       <div class="muted" style="margin:0 0 8px">正在编辑：<b>本班（${esc(sched.homeroom?.name || '本班')}）</b> 的周课表<span id="wk-parity-lb">${useSplit() ? ' · <b style="color:var(--primary)">' + (editParity === 'odd' ? '单周' : '双周') + '</b>' : ''}</span></div>
       ${useSplit() ? `<div class="seg" id="wk-parity" style="margin-bottom:8px"><button data-v="odd" class="${editParity === 'odd' ? 'on' : ''}">单周课表</button><button data-v="even" class="${editParity === 'even' ? 'on' : ''}">双周课表</button></div>` : ''}
       <div id="wk-table">${tableHTML()}</div>
-      <div class="save-note">点格子选科目；<b>辅导 / 大课间为只读时段</b>，灰底不可点；预设没有的科目点「＋ 自定义科目」即可新增。${useSplit() ? '单周、双周各维护一套，互不覆盖。' : ''}</div>
+      <div class="save-note">点格子选科目；<b>辅导 / 大课间不可点</b>；没有的科目点「＋ 自定义科目」。${useSplit() ? '单双周各一套，互不覆盖。' : ''}</div>
     </div>`;
   const p = openPicker({ title: '周课表', body, foot: `<button class="btn ghost" data-pclose>关闭</button><button class="btn" id="wk-save">保存课表</button>` });
   const onCell = e => {
@@ -272,7 +272,7 @@ function openMineCell(cur, sched, onPick, save) {
     body: `<div style="padding:12px 14px">
       <label class="muted" style="font-size:12px">科目</label>
       <div class="chips" id="mc-subs">${subjectChipsHTML(all, cur?.subject)}</div>
-      <label class="muted" style="font-size:12px;display:block;margin-top:12px">班级（跨班任教时选对应班）</label>
+      <label class="muted" style="font-size:12px;display:block;margin-top:12px">班级</label>
       <div class="chips" id="mc-cls">${classList().length
         ? classList().map(c => `<span class="chip ${cur?.cls === c.name ? 'on' : ''}" data-c="${esc(c.name)}">${esc(c.name)}</span>`).join('')
         : '<span class="muted">请先在「授课班级」添加班级</span>'}
@@ -331,7 +331,7 @@ function openMine(db, sched, rerender) {
   const save = () => saveSchedule(db, sched);
   const body = `
     <div style="padding:12px 14px">
-      <div class="muted" style="margin:0 0 8px">我的课表：自行填写，空格子 = 该节不排我的课。点格子填<b>科目</b>并选<b>班级</b>（跨班任教时每节选对应班，班级在「授课班级」里维护）。</div>
+      <div class="muted" style="margin:0 0 8px">空格子 = 该节没课；点格子填<b>科目</b>和<b>班级</b>。</div>
       <table class="week">
         <tr><th style="width:52px">节次</th>${DAYS.map(d => `<th>${d}</th>`).join('')}</tr>
         ${periods.map((p, pi) => {
@@ -347,7 +347,7 @@ function openMine(db, sched, rerender) {
           </tr>`;
         }).join('')}
       </table>
-      <div class="save-note">空格=无课；点格子填科目并选班级。可填的科目含预设与你在「＋ 自定义科目」里加的。</div>
+      <div class="save-note">空格=无课；点格子填科目与班级。</div>
     </div>`;
   const p = openPicker({ title: '我的课表', body, foot: `<button class="btn ghost" data-pclose>关闭</button><button class="btn" id="mk-save">保存课表</button>` });
   p.body.querySelector('.week').addEventListener('click', e => {
@@ -373,7 +373,7 @@ function openTeachClasses(db, sched, rerender) {
   const save = () => saveSchedule(db, sched);
   const p = openPicker({
     title: '授课班级（跨班教学）',
-    lead: '本班（第一项）可直接改名，改名会同步到「设备名」的班级部分；跨班任教时再添加所教的其他班级，之后在「我的课表」每节课选对应班级。',
+    lead: '本班（第一项）可改名，会同步到「设备名」的班级部分；跨班任教就在这添加其它班。',
     body: '<div style="padding:12px 14px" id="cc-body"></div>',
     foot: `<button class="btn" data-pclose>完成</button>`
   });
@@ -474,7 +474,7 @@ function openSched(db, sched, rerender) {
         </div>`;
       }).join('')}</div>
       <button class="btn ghost tiny" id="sd-add" style="margin-top:10px">＋ 新增节次</button>
-      <div class="save-note">夏冬共用同一套节次结构：点一行可改类型与名称，正课序号自动排好，升 / 降 / 插入 / 删除都只动结构，不丢已排的课。</div>`;
+      <div class="save-note">夏冬共用同一套节次结构；增删改只动结构，不丢已排的课。</div>`;
   const timeHTML = () => `
       <div class="seg" id="sd-season" style="margin-bottom:8px">
         <button data-v="summer" class="${seasonTab === 'summer' ? 'on' : ''}">夏季</button>
@@ -486,7 +486,7 @@ function openSched(db, sched, rerender) {
           <input class="ti" data-t="${i}" value="${esc(seasonTab === 'summer' ? (d.summer || '') : (d.winter || ''))}"
             placeholder="如 08:00-08:40" autocomplete="off" enterkeyhint="done">
         </div>`).join('')}</div>
-      <div class="save-note">每个节次的时间都可改（正课 / 辅导 / 大课间 / 课后服务一样），填完点右下角「保存」。辅导、大课间在周课表里不排科目。</div>`;
+      <div class="save-note">每节时间都能改；辅导、大课间在周课表里不排科目。</div>`;
   const draw = () => {
     const b = p.body.querySelector('#sd-body');
     b.innerHTML = `
@@ -580,11 +580,11 @@ function collHTML(c, students) {
 function openNewColl(db, colls, rerender) {
   const p = openPicker({
     title: '新建收缴任务',
-    lead: '一句话：起个标题 → 到点名面板逐个点姓名标谁交了。全班默认<b>未交</b>，点名标记已交。',
+    lead: '起个标题 → 到点名面板点姓名标谁交了。全班默认<b>未交</b>。',
     body: `<div style="padding:14px 16px">
       <div class="field"><label>任务标题（2~20 字，如「语文作业 / 校服费 / 安全回执」）</label>
         <input class="ta" id="nt-name" placeholder="语文作业" maxlength="20"></div>
-      <div class="save-note">不收集类型 / 金额 / 截止日期 / 范围——作业、回执、费用本来就是同一个机制，区别只在标题。</div>
+      <div class="save-note">作业、回执、费用是同一套机制，只差标题。</div>
     </div>`,
     foot: `<button class="btn ghost" data-pclose>取消</button><button class="btn" id="nt-ok">创建并去点名</button>`
   });
@@ -614,7 +614,7 @@ function openRoll(coll, db, rerender) {
       <div class="muted" id="rl-stat" style="margin-bottom:6px"></div>
       <div id="rl-box"></div>
     </div>`,
-    foot: `<button class="btn ghost" id="rl-undo">撤销上一次</button><button class="btn" data-pclose>完成</button>`
+    foot: `<button class="btn ghost" id="rl-undo">撤销</button><button class="btn" data-pclose>完成</button>`
   });
   listStudents(db).then(ss => { students.push(...ss); draw(); });
 
@@ -651,7 +651,7 @@ function openRoll(coll, db, rerender) {
     lastToggled = null;
     coll.paidIds = [...paid];
     await putCollection(db, coll);
-    toast('已撤销上一次'); draw(); rerender();
+    toast('已撤销'); draw(); rerender();
   };
 }
 
@@ -673,7 +673,7 @@ export async function mount(scrollEl) {
           ? colls.map(c => collHTML(c, students)).join('')
           : emptyState('还没有收缴任务')}</div>
         <button class="btn ghost mt" id="cl-new">+ 新建收缴任务</button>
-        <div class="save-note">标记已交后，系统自动算出已交 / 未交比例。作业、费用、回执都用同一套点名方式，只是标题不同。</div>
+        <div class="save-note">标记后自动算出已交 / 未交比例。</div>
       </div>`;
     bind();
   };

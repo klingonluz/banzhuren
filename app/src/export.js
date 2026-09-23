@@ -49,7 +49,7 @@ export function buildText(students, recs, withImg, withGz) {
   lines.push(`学期：${state.semester?.name || ''}    导出时间：${new Date().toLocaleString('zh-CN')}`);
   lines.push(`覆盖学生：${Object.keys(byStu).length} 人    记录总数：${data.length}`);
   lines.push('='.repeat(28));
-  lines.push('【说明】以下是本学期学生的能力发展记录（实名，不含成绩），含「关注」类教师内部观察（含问题行为、错误目的识别与鼓励支持方向），请一并纳入分析。措辞以鼓励为主：把不足写成可努力的方向，不给孩子贴负面标签。');
+  lines.push('【说明】以下是本学期学生的能力发展记录（实名，不含成绩），含「关注」类内部观察，请一并纳入分析。措辞以鼓励为主：把不足写成可努力的方向，不贴负面标签。');
   for (const st of students) {
     const arr = byStu[st.id]; if (!arr || !arr.length) continue;
     lines.push('');
@@ -75,28 +75,28 @@ export async function openExport() {
 
   const p = openPicker({
     title: '成长记录文本 · 实名',
-    lead: '这是一份<b>给人看的文字材料</b>（可打印 / 给家长），<b>不是备份</b>；它不会联网，姓名保持真实，只存在你自己的设备上。要发给 AI 请用「分析 → AI 评语素材」。',
+    lead: '给人看的文字材料，可打印 / 给家长，<b>不是备份</b>；姓名保持真实。要发给 AI 请用「分析 → AI 评语素材」。',
     body: `
       <div style="padding:14px 16px">
 ${scopeBlockHTML('ex')}
         <div class="field">
-          <label>带图标注 <span class="muted" style="font-weight:400;font-size:11px">带图记录后标「附现场照片 N 张」与图片说明</span></label>
+          <label>带图标注 <span class="muted" style="font-weight:400;font-size:11px">带图记录后标照片张数与说明</span></label>
           <div class="seg sm" id="ex-img">
             <button data-v="1" class="on">开</button><button data-v="0">关</button>
           </div>
         </div>
         <div class="field">
-          <label>关注项 <span class="muted" style="font-weight:400;font-size:11px">教师内部观察，默认一并导出更全面</span></label>
+          <label>关注项 <span class="muted" style="font-weight:400;font-size:11px">教师内部观察</span></label>
           <div class="seg sm" id="ex-gz">
             <button data-v="1" class="on">一并导出</button><button data-v="0">仅正向能力</button>
           </div>
         </div>
-        <div class="save-note" style="margin:6px 0">包含：<b>真实姓名</b> / 年级 / 班级 / 能力发展记录 / <b>关注项（鼓励为主）</b> / 带图标记与图片说明。<b>不含</b>：成绩、照片本身、已删记录、其他学期。</div>
+        <div class="save-note" style="margin:6px 0">包含：<b>真实姓名</b> / 班级 / 能力发展记录 / <b>关注项</b> / 图片说明。<b>不含</b>：成绩与照片。</div>
         <div class="muted" id="ex-stat" style="font-size:12px;margin-bottom:6px"></div>
         <div class="ai-pre" id="ex-pre"></div>
       </div>`,
     foot: `<button class="btn ghost" data-pclose>关闭</button>
-           <button class="btn ghost" id="ex-down">下载 .txt</button>
+           <button class="btn ghost" id="ex-down">下载</button>
            <button class="btn" id="ex-copy">复制文本</button>`
   });
 

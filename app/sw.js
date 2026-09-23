@@ -1,7 +1,7 @@
 // 班主任工作台 Service Worker（PWA 离线缓存）
 // 🔴 关键：cache-first 会把旧 JS 永久缓存，导致修复后的代码刷不出来。
 // 改成 network-first（在线取最新，离线回退缓存）+ 每次发版 bump CACHE 清除旧缓存。
-const CACHE = 'bzr-v39';
+const CACHE = 'bzr-v41';
 const ASSETS = [
   './', './index.html', './manifest.webmanifest', './favicon.svg', './recover.html',
   './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png',

@@ -22,19 +22,19 @@ export async function mount(scrollEl) {
       <div class="li"><span>分数 / 名次</span><span class="pill no" style="margin-left:auto">自动隐去</span></div>
       <div class="li"><span>照片</span><span class="pill no" style="margin-left:auto">不参与，一张都不发</span></div>
       <div class="li"><span>关注类记录</span><span class="pill no" style="margin-left:auto">${gzTotal} 条（可含，负面自动转成可努力方向）</span></div>
-      <p class="muted" style="margin-top:8px">生成的是<b>给 AI 看的那一份</b>：保留「这个学生是什么样的」，去掉「这个学生是谁」。代号只在本次有效，关掉或刷新即作废。</p>
+      <p class="muted" style="margin-top:8px">生成的是<b>给 AI 看的那一份</b>：保留「什么样的学生」，去掉「是谁」。代号只在本次有效。</p>
       <button class="btn mt" id="an-ai">生成 AI 评语素材</button>
       <button class="btn ghost mt" id="an-ai-back">把 AI 返回的评语还原成真实姓名</button>
-      <div class="save-note">照片不参与——需要说明画面时用<b>一句文字</b>转述：记录时可为每张图写「图片说明」，这句文字会出现在这份素材里（也会一并脱敏）。</div>
+      <div class="save-note">照片不参与；要说明画面，就在记录时给图片写「图片说明」——那句文字会进素材（同样脱敏）。</div>
     </div>
 
     <div class="card">
       <h2>🛡️ 外发前须知</h2>
       <div class="save-note" style="border:none">
-        ① 未满 14 周岁学生的信息属于《个人信息保护法》第 28 条中的<b>敏感个人信息</b>，教师不能代替学生对外授权。<br>
-        ② 本工具只提供<b>技术上的脱敏</b>；是否外发、发给谁、发多少，请你按学校要求与自己的判断决定。<br>
-        ③ 照片一律不参与 AI 输出——需要说明画面时，用一句文字转述（如「手抄报排版工整」）即可。<br>
-        ④ 生成素材后，建议先扫一眼预览，确认没有你不希望外发的内容，再复制。
+        ① 未满 14 周岁的信息属《个人信息保护法》第 28 条<b>敏感个人信息</b>，教师不能代替学生授权。<br>
+        ② 本工具只做<b>技术脱敏</b>；是否外发、发给谁，由你按学校要求判断。<br>
+        ③ 照片一律不进 AI 输出；要说明画面就写一句文字。<br>
+        ④ 复制前先扫一眼预览。
       </div>
     </div>`;
 
@@ -68,7 +68,7 @@ function openAI(students, tab = 'gen') {
 
   const p = openPicker({
     title: 'AI 评语素材',
-    lead: '这里生成的是<b>要发给 AI 的那一份</b>。真实姓名换成一次性代号，分数、名次、具体日期与他人姓名都会被隐去，<b>照片不参与</b>。',
+    lead: '要发给 AI 的那一份。姓名换代号，分数、名次、具体日期、他人姓名隐去，<b>照片不参与</b>。',
     body: `
       <div style="padding:12px 14px">
         <div class="seg" id="ai-tab">
@@ -85,7 +85,7 @@ ${scopeBlockHTML('ai')}
             <label>日期精度 <span class="muted" style="font-weight:400;font-size:11px">精确日期能定位到具体某天</span></label>
             <div class="seg sm" id="ai-date"><button data-v="month" class="on">只到月</button><button data-v="full">保留完整</button></div>
           </div>
-          <div class="save-note" style="margin:6px 0">🔒 已隐去：<b>真实姓名</b>→代号 · 其他同学→「某同学」 · 分数→${esc(MASK.score)} · 名次→${esc(MASK.rank)} · 日期→按月。代号仅本次有效。</div>
+          <div class="save-note" style="margin:6px 0">🔒 已隐去：<b>真实姓名</b>→代号 · 其他同学→「某同学」 · 分数→${esc(MASK.score)} · 名次→${esc(MASK.rank)} · 日期→按月</div>
           <div class="muted" id="ai-stat" style="font-size:12px;margin-bottom:6px"></div>
           <div class="ai-pre" id="ai-pre"></div>
         </div>
