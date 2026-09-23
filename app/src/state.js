@@ -29,7 +29,7 @@ export const state = {
 };
 
 export function onChange(fn) { state.listeners.add(fn); }
-export function emit() { state.listeners.forEach(fn => fn()); }
+function emit() { state.listeners.forEach(fn => fn()); }
 export function refresh() { emit(); }
 
 // 🔴 字号靠 --fs-* 五个 CSS 变量挂在 :root，立即生效、无需重启（§4.8.18 ①-5）
@@ -101,7 +101,7 @@ export function setSemester(semester) {
 // 首次启动：确保存在当前学期（没有则按当前学年新建一个）
 // 🔴 空库只补「基线」（标签体系 + 空课表），绝不含任何样例 / 临时数据。
 export async function ensureCurrentSemester() {
-  await openMeta();                       // 🔴 旧 meta 结构不兼容 → 重建（防止 SchemaError 崩到兜底页）
+  await openMeta();                       // 🔴 打开失败按错误类型分流（newer / blocked / corrupt），**绝不删库**，见 db/migrate.js
   let sems = await listSemesters();
   let cur = await getSetting('currentSemester', null);
   let sem = sems.find(s => s.id === cur);
@@ -118,7 +118,7 @@ export async function ensureCurrentSemester() {
     await ensureSemester(sem);
   }
   setSemester(sem);
-  state.db = await ensureOpen(state.db, sem.id);   // 🔴 旧学期库不兼容 → 升级或删库重建（返回可用实例）
+  state.db = await ensureOpen(state.db, sem.id);   // 🔴 v1→v2 由 Dexie 自动升级；打开失败不删库，抛 DbOpenError 交给启动兜底页
   await seedTaxonomy(state.db);                    // 幂等补「正面管教标签体系」（迁移/全新都安全）
   // 🔴 空库只补「基线」：标签体系 + 空课表，不含任何学生 / 记录（老师自己录名单、自己排课）。
   if (!(await state.db.students.count())) await seedBaseline(state.db);
@@ -126,10 +126,6 @@ export async function ensureCurrentSemester() {
   await backfillPinyin(state.db);
   await setSetting('currentSemester', sem.id);
   return sem;
-}
-
-export async function listAllSemesters() {
-  return await listSemesters();
 }
 
 /* ---------- 存储持久化（§4.8.18）----------

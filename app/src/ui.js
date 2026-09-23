@@ -30,7 +30,7 @@ export function banner(id, html, kind = 'warn') {
   if (!host) return;
   let b = host.querySelector('#' + id);
   if (!b) { b = el(`<div class="banner ${kind}" id="${id}"></div>`); host.appendChild(b); }
-  b.innerHTML = html + '<span class="x" data-bclose>&times;</span>';
+  b.innerHTML = html + '<span class="x" data-bclose role="button" aria-label="关闭提醒">&times;</span>';
   b.querySelector('[data-bclose]').onclick = () => b.remove();
 }
 export function closeBanner(id) {
@@ -46,7 +46,7 @@ export function showSheet({ title, body = '', foot = '', closable = true }) {
       <div class="sheet">
         <div class="sheet-head">
           <div class="tt">${esc(title)}</div>
-          ${closable ? '<div class="x" data-close>&times;</div>' : ''}
+          ${closable ? '<div class="x" data-close role="button" aria-label="关闭">&times;</div>' : ''}
         </div>
         <div class="sheet-body">${body}</div>
         ${foot ? `<div class="sheet-foot">${foot}</div>` : ''}
@@ -61,10 +61,6 @@ export function showSheet({ title, body = '', foot = '', closable = true }) {
   app().appendChild(mask);
   return { mask, body: mask.querySelector('.sheet-body'), foot: mask.querySelector('.sheet-foot'), close: myClose };
 }
-export function closeSheets() {
-  app().querySelectorAll('.mask.show').forEach(m => m.remove());
-}
-
 /* ---------- 全屏弹层（学生选择 / 点名 / 设置 / 导出一律全屏） ---------- */
 // 🔴 规格：手机上居中 Modal 可点区域太小、键盘弹起会顶飞 → 一律全屏（§4.8.3）
 export function openPicker({ id = '', title = '', lead = '', body = '', foot = '', onClose = null }) {
@@ -73,19 +69,28 @@ export function openPicker({ id = '', title = '', lead = '', body = '', foot = '
       <div class="picker">
         <div class="picker-hd">
           <h3>${esc(title)}</h3>
-          <span class="x" data-pclose>&times;</span>
+          <span class="x" data-pclose role="button" aria-label="关闭">&times;</span>
         </div>
         ${lead ? `<div class="picker-lead">${lead}</div>` : ''}
         <div class="lst">${body}</div>
         ${foot ? `<div class="nt-foot">${foot}</div>` : ''}
       </div>
     </div>`);
-  const close = () => { mask.remove(); onClose && onClose(); };
+  let closed = false;
+  // 🔴 fromBack：由物理返回键触发的关闭 —— 浏览器**已经**退过一格历史了，这里不能再 back，否则一次退两格
+  const close = fromBack => {
+    if (closed) return;
+    closed = true;
+    entry.live = false;                       // 这次历史条目已被消费，popstate 时不必再执行回调
+    mask.remove();
+    if (!fromBack) { try { window.history.back(); } catch (_) {} }
+    onClose && onClose();
+  };
+  const entry = pushHistory(() => close(true));   // 安卓物理返回键兜底（§4.8.11-6）
   // 🔴 绑定所有 [data-pclose]（header × 与 footer 取消/关闭/完成 都带此属性），否则只有第一个（×）生效
-  mask.querySelectorAll('[data-pclose]').forEach(x => x.onclick = close);
+  mask.querySelectorAll('[data-pclose]').forEach(x => x.onclick = () => close());
   mask.addEventListener('click', e => { if (e.target === mask) close(); });
   app().appendChild(mask);
-  pushHistory(close);                      // 安卓物理返回键兜底（§4.8.11-6）
   return { mask, body: mask.querySelector('.lst'), foot: mask.querySelector('.nt-foot'), close };
 }
 export function closePickers() {
@@ -95,13 +100,71 @@ export function closePickers() {
 /* ---------- 物理返回键兜底（history.pushState） ---------- */
 const backStack = [];
 export function pushHistory(fn) {
-  backStack.push(fn);
+  const entry = { fn, live: true };
+  backStack.push(entry);
   window.history.pushState({ bzr: backStack.length }, '');
+  return entry;
 }
+// 🔴 主动关闭要**消费掉**对应历史条目（调用方置 entry.live = false 后再 history.back()），
+//    否则每开关一次弹层就多留一条历史，安卓返回键要连按很多次才退得出页面（P1-12）。
 window.addEventListener('popstate', () => {
-  const fn = backStack.pop();
-  if (fn) { try { fn(); } catch {} }
+  const entry = backStack.pop();
+  if (!entry || !entry.live) return;     // 已被主动关闭消费掉 → 不重复执行
+  try { entry.fn(); } catch {}
 });
+
+/* ---------- 学生搜索：四处共用的过滤与行渲染（P2-4） ---------- */
+// 🔴 记录页选学生 / 管理名单 / 导出面板 / AI 素材面板各写过一份「姓名 includes 或拼音首字母 includes」，
+//    改一处忘一处的风险很高，统一到这里。
+export function filterStudents(students, q) {
+  const kw = String(q || '').trim().toLowerCase();
+  return (students || []).filter(s => !kw || s.name.includes(kw) || (s.pinyin || '').toLowerCase().includes(kw));
+}
+// 学生行：姓名 + 拼音首字母，可选标记已选。attr 默认 data-s（管理名单用 data-id，见调用方）
+export function srowList(students, { isOn = null, attr = 'data-s', empty = '无匹配' } = {}) {
+  const list = students || [];
+  return list.length
+    ? list.map(s => `<div class="srow ${isOn && isOn(s) ? 'on' : ''}" ${attr}="${esc(s.id)}">${esc(s.name)}<span class="py">${esc(s.pinyin || '')}</span></div>`).join('')
+    : `<div class="empty">${esc(empty)}</div>`;
+}
+
+/* ---------- 「范围 + 指定学生」面板：文本导出 / AI 素材两处共用（P2-4） ---------- */
+// 🔴 数据页「成长记录文本」与分析页「AI 评语素材」原本各写一份「全班 / 指定学生 + 搜索列表」，
+//    含 seg 切换、搜索框、选中集合三套逻辑。这里抽出 HTML 构造 + 交互绑定，两处只传 prefix。
+//    保留各自的 id（pre ex- / ai-）以便测试与既有 DOM 查询不变。
+export function scopeBlockHTML(prefix) {
+  return `
+        <div class="field">
+          <label>范围</label>
+          <div class="seg" id="${prefix}-scope"><button data-v="all" class="on">全班</button><button data-v="pick">指定学生</button></div>
+        </div>
+        <div id="${prefix}-pick" style="display:none;margin:-2px 0 8px">
+          <input class="search" id="${prefix}-q" type="search" enterkeyhint="search" placeholder="搜索学生 / 拼音首字母" style="border:1px solid var(--line);border-radius:8px;margin-bottom:8px">
+          <div id="${prefix}-list"></div>
+        </div>`;
+}
+// root 限定查找范围（同一弹层内 id 唯一，通常直接传 p.body）；onChange 在切换范围 / 增删学生后调用
+export function bindScopeBlock(root, prefix, students, onChange = () => {}) {
+  const picked = new Set();
+  let scope = 'all';
+  onSeg(root.querySelector('#' + prefix + '-scope'), v => {
+    scope = v;
+    root.querySelector('#' + prefix + '-pick').style.display = v === 'pick' ? '' : 'none';
+    onChange();
+  });
+  const list = root.querySelector('#' + prefix + '-list');
+  const draw = (q = '') => { list.innerHTML = srowList(filterStudents(students, q), { isOn: s => picked.has(s.id) }); };
+  root.querySelector('#' + prefix + '-q').oninput = e => draw(e.target.value);
+  draw();
+  list.onclick = e => {
+    const row = e.target.closest('[data-s]'); if (!row) return;
+    const id = row.dataset.s;
+    if (picked.has(id)) picked.delete(id); else picked.add(id);
+    row.classList.toggle('on');
+    onChange();
+  };
+  return { picked, isAll: () => scope === 'all' };
+}
 
 /* ---------- 记录操作面板（⋯） ---------- */
 export function actionSheet(items) {

@@ -59,7 +59,7 @@ const SEMESTER_RULES = {
   },
   tags: { defaults: { del: 0, starred: 0, useCount: 0 } }
   // 🔴 以下表**不需要**补齐（都出生在 v2，不可能有缺键的旧记录），跳过它们还能避免
-  //    每次启动把整个图片表（含照片）读一遍：images / collections / categories / templates
+  //    每次启动把整个图片表（含照片）读一遍：images / collections / categories
 };
 
 function emptyOf(v) { return Array.isArray(v) ? [] : (v && typeof v === 'object' ? { ...v } : v); }

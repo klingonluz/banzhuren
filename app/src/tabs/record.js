@@ -2,15 +2,17 @@
 // V11.1：正面管教标签体系（8 能力分类 + 关注）；关注子模块用 chip-switch；记录只存标签名 + 评语
 import { state } from '../state.js';
 import {
-  listStudents, listRecordsPage, addRecord, softDeleteRecord, restoreRecord,
-  countActiveRecords, getRecord, putImage, getImageBlob, listImages, incTagUse, listTags
+  listStudents, listRecordsPage, listRecordsByCategoryPage, listRecordsWithImgPage,
+  addRecord, softDeleteRecord, restoreRecord,
+  countActiveRecords, getRecord, putImage, getImageBlob, incTagUse, listTags
 } from '../db/semester.js';
 import { WUYU, GUANZHU, GZ_GROUPS, GZ_SUB } from '../db/seed.js';
 import { lintText, PHOTO_BAN, PHOTO_OK } from '../privacy.js';
 import {
-  el, esc, toast, banner, closeBanner, openPicker, closePickers,
-  actionSheet, undoBar, emptyState, bindEmpty, confirm, lightbox, syncSeg, onSeg
+  el, esc, toast, banner, openPicker, filterStudents, srowList,
+  actionSheet, undoBar, emptyState, bindEmpty, confirm, lightbox
 } from '../ui.js';
+import { pad } from '../util.js';
 
 const TL_PAGE = () => +(state.settings.tlPage || 20);   // 🔴 分页保命项：单页上限
 // 🔴 时间线渐进显示：首屏 5 条，逐步 +5 直到 20，之后每页 TL_PAGE()（避免一次灌太多卡顿）
@@ -29,7 +31,6 @@ let lastAuto = '';
 let editingId = null;
 let allNames = [];                        // 全班姓名（含已转出）：评语「他人姓名」实时提醒用
 
-const pad = n => String(n).padStart(2, '0');
 const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
 const ymPrefix = () => todayStr().slice(0, 8);
 const draftKey = () => 'bzr_draft_' + (state.currentSemesterId || 'x');
@@ -203,7 +204,7 @@ function renderImgs() {
   const box = document.getElementById('q-imgs');
   if (!box) return;
   box.innerHTML = form.imgs.map((im, i) =>
-    `<div class="img-cell"><div class="img-item" data-view="${i}"><img src="${im.url}" alt=""><span class="rmx" data-rm="${i}">&times;</span></div>` +
+    `<div class="img-cell"><div class="img-item" data-view="${i}"><img src="${im.url}" alt=""><span class="rmx" data-rm="${i}" role="button" aria-label="删除这张图片" title="删除">&times;</span></div>` +
     `<input class="imgdesc" data-desc="${i}" value="${esc(im.desc || '')}" placeholder="这张的说明"></div>`).join('');
   const n = document.getElementById('q-imgn'); if (n) n.textContent = form.imgs.length;
   const okBox = document.getElementById('q-pdok');
@@ -231,17 +232,15 @@ export function pickStudent(onPick, currentId) {
     const p = openPicker({
       title: '选择学生',
       lead: '支持按姓名或拼音首字母搜索（如「张梓涵」打 zzh）。',
-      body: `<input class="search" id="sp-q" placeholder="搜索姓名 / 拼音首字母" style="border-bottom:1px solid var(--line)">
+      body: `<input class="search" id="sp-q" type="search" enterkeyhint="search" placeholder="搜索姓名 / 拼音首字母" style="border-bottom:1px solid var(--line)">
              <div id="sp-lst"></div>`,
       foot: `<button class="btn" data-pclose>关闭</button>`
     });
     const lst = p.body.querySelector('#sp-lst');
     const draw = q => {
-      q = (q || '').trim().toLowerCase();
-      const hit = students.filter(s => !q || s.name.includes(q) || (s.pinyin || '').toLowerCase().includes(q));
-      lst.innerHTML = hit.length
-        ? hit.map(s => `<div class="srow ${s.id === currentId ? 'on' : ''}" data-id="${s.id}">${esc(s.name)}<span class="py">${esc(s.pinyin || '')}</span></div>`).join('')
-        : '<div class="empty">无匹配学生</div>';
+      lst.innerHTML = srowList(filterStudents(students, q), {
+        isOn: s => s.id === currentId, attr: 'data-id', empty: '无匹配学生'
+      });
     };
     draw('');
     p.body.querySelector('#sp-q').oninput = e => draw(e.target.value);
@@ -255,22 +254,26 @@ export function pickStudent(onPick, currentId) {
 }
 
 /* ================= ② 统计概览 ================= */
+// 🔴 红线1：不 toArray() 拉全表 —— 用 .each() 流式统计（内存里同时只有一条记录），图片只 count() 不读 Blob。
+//    统计只用到「计数 + 去重集合」，没有任何理由先把整张表物化成数组。
 async function computeStats() {
   const db = state.db;
   const students = await listStudents(db);
-  const recs = await db.growth_records.where('del').equals(0).toArray();
-  const imgs = await listImages(db);
-  const imgN = imgs.length;                       // 🔴 取图片池长度，含孤儿
-  const recStu = new Set(recs.map(r => r.studentId));
+  const recStu = new Set();
+  const dist = {}; WUYU.forEach(w => dist[w] = 0); dist[GUANZHU] = 0;
+  const tagCnt = {};
+  let total = 0;
+  await db.growth_records.where('del').equals(0).each(r => {
+    total++;
+    recStu.add(r.studentId);
+    if (dist[r.category] != null) dist[r.category]++;
+    (r.tags || []).forEach(n => tagCnt[n] = (tagCnt[n] || 0) + 1);
+  });
+  const imgN = await db.images.count();          // 🔴 图片池总数（含孤儿），只数不读内容
   const covered = students.filter(s => recStu.has(s.id));
   const unrec = students.filter(s => !recStu.has(s.id));
-  const dist = {}; WUYU.forEach(w => dist[w] = 0); dist[GUANZHU] = 0;
-  recs.forEach(r => { if (dist[r.category] != null) dist[r.category]++; });
-  const tagCnt = {};
-  recs.forEach(r => (r.tags || []).forEach(n => tagCnt[n] = (tagCnt[n] || 0) + 1));
-  const top = Object.entries(tagCnt).sort((a, b) => b[1] - a[1]).slice(0, 6)
-    .map(([n, c]) => ({ n, c }));
-  return { total: recs.length, imgN, students, covered: covered.length, unrec, dist, top, recs };
+  const top = Object.entries(tagCnt).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([n, c]) => ({ n, c }));
+  return { total, imgN, students, covered: covered.length, unrec, dist, top };
 }
 
 function statCard(s) {
@@ -337,17 +340,14 @@ function openUnrec(unrec) {
 async function fetchPage(offset, limit) {
   const db = state.db;
   if (tlFilter === '全部') return await listRecordsPage(db, { offset, limit });
-  if (tlFilter === '有图') {
-    const arr = await db.growth_records.where('del').equals(0).reverse().toArray();
-    return arr.filter(r => (r.imageIds || []).length).slice(offset, offset + limit);
-  }
+  if (tlFilter === '有图') return await listRecordsWithImgPage(db, { offset, limit });   // 🔴 逐页扫描，不拉全表
   if (tlFilter === '本月') {
     const pre = ymPrefix();
-    return await db.growth_records.where('[del+date]').between([0, pre + '01'], [0, pre + '32']).reverse().toArray();
+    return await db.growth_records.where('[del+date]')
+      .between([0, pre + '01'], [0, pre + '32']).reverse().offset(offset).limit(limit).toArray();
   }
-  // 按分类名过滤（8 能力 / 关注）
-  const arr = await db.growth_records.where('category').equals(tlFilter).toArray();
-  return arr.filter(r => r.del === 0).sort((a, b) => b.date.localeCompare(a.date)).slice(offset, offset + limit);
+  // 按分类名过滤（8 能力 / 关注）：🔴 [del+category+date] 复合索引分页
+  return await listRecordsByCategoryPage(db, tlFilter, { offset, limit });
 }
 
 function gridClass(n) { return n === 1 ? 'g1' : n === 2 ? 'g2' : 'g3'; }
@@ -365,7 +365,7 @@ function recCard(r, name) {
         <div class="tl-meta">${head}</div>
         <div class="tl-comment">${esc(r.text || '')}</div>
       </div>
-      <div class="tl-act" data-act="${esc(r.id)}">⋯</div>
+      <div class="tl-act" data-act="${esc(r.id)}" role="button" aria-label="这条记录的操作">⋯</div>
     </div>`;
   }
   if (mode === 'list') {
@@ -376,7 +376,7 @@ function recCard(r, name) {
         <div class="tl-comment">${esc(r.text || '')}</div>
         ${tags ? `<div class="tl-tags">${tags}</div>` : ''}
       </div>
-      <div class="tl-act" data-act="${esc(r.id)}">⋯</div>
+      <div class="tl-act" data-act="${esc(r.id)}" role="button" aria-label="这条记录的操作">⋯</div>
     </div>`;
   }
   return `<div class="tl-card" data-id="${esc(r.id)}">
@@ -385,7 +385,7 @@ function recCard(r, name) {
     ${tags ? `<div class="tl-tags">${tags}</div>` : ''}
     ${imgs.length ? `<div class="grid ${gridClass(imgs.length)}">${imgs.map((_, i) => `<div class="ph" data-img="${i}" data-id="${esc(r.id)}">图</div>`).join('')}</div>` : ''}
     ${(r.imgDescs || []).filter(Boolean).length ? `<div class="tl-desc">${(r.imgDescs || []).map((d, i) => d ? `图 ${i + 1}：${esc(d)}` : '').filter(Boolean).join('　')}</div>` : ''}
-    <div class="tl-act" data-act="${esc(r.id)}">⋯</div>
+    <div class="tl-act" data-act="${esc(r.id)}" role="button" aria-label="这条记录的操作">⋯</div>
   </div>`;
 }
 
@@ -569,22 +569,27 @@ export async function mount(scrollEl) {
     try {
       const db = state.db;
       const imageIds = [], imgDescs = [];
-      for (const im of form.imgs) {                   // 🔴 图片在学期库（随归档一起删）
-        const imageId = 'img_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-        await putImage(db, imageId, im.blob);
-        imageIds.push(imageId);
-        imgDescs.push((im.desc || '').trim());        // 🔴 图片说明与 imageIds 一一对齐
-      }
       const rec = {
         id: 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
         studentId: form.stu,
         category: tagCat,
         tags: [...form.tags],
-        text, imageIds, imgDescs, templateId: null,
+        text, imageIds, imgDescs,
         date: qDate.value || todayStr(),
         updatedAt: Date.now(), del: 0
       };
-      await addRecord(db, rec);
+      // 🔴 P1-1：图片与记录放进**同一个事务**，任一步失败即整体回滚。
+      //    旧写法是先逐张 putImage 再 addRecord：addRecord 一旦失败（配额不足 / 事务冲突），
+      //    图片已经进库却没有任何记录引用它（孤儿），老师重试还会以新 imageId 再存一遍，越攒越多。
+      await db.transaction('rw', db.images, db.growth_records, async () => {
+        for (const im of form.imgs) {                 // 🔴 图片在学期库（随归档一起删）
+          const imageId = 'img_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+          await putImage(db, imageId, im.blob);
+          imageIds.push(imageId);
+          imgDescs.push((im.desc || '').trim());      // 🔴 图片说明与 imageIds 一一对齐
+        }
+        await addRecord(db, rec);
+      });
       for (const n of rec.tags) { try { await incTagUse(db, n, 1); } catch {} }   // 使用频率 +1
       // 成功才清空：清标签/评语/图片，保留学生由 afterSave 决定
       form.tags.clear(); lastAuto = ''; form.imgs.forEach(i => URL.revokeObjectURL(i.url)); form.imgs = [];

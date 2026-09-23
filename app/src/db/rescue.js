@@ -8,6 +8,10 @@ let rescueErr = null;   // 备份库打开失败的原因（正常时 null），
 function makeRescue() {
   const db = new Dexie('bzr_rescue');
   db.version(1).stores({ snaps: 'key' });   // key: 'auto:<semId>:<ts>' | 'rescue:<dbName>:<ts>'
+  // 🔴 v2：元数据与内容分表。列表（「查看抢救数据」/ 启动横幅）只读 snapMeta —— 几十字节；
+  //    整份 dump（可能含多张图片）只在「下载 / 恢复」那一刻用 getSnap() 按 key 取。
+  //    旧库升级后 snapMeta 为空，listSnaps() 会自愈补写一次（见下）。
+  db.version(2).stores({ snaps: 'key', snapMeta: 'key, type, exportedAt' });
   return db;
 }
 export function openRescue() {
@@ -32,11 +36,26 @@ export function rescueError() { return rescueErr; }
 
 // ---- 写入 / 读取 ----
 // 🔴 备份库不可用时一律「静默降级」：返回 false / null / []，绝不抛错打断老师正在做的事
+// 快照元数据（列表用）：只留展示与筛选需要的字段，不含 pack / stores 正文
+function metaOf(rec) {
+  return {
+    key: rec.key, type: rec.type || '', semesterId: rec.semesterId || '',
+    semesterName: rec.semesterName || '', device: rec.device || '',
+    dbName: rec.dbName || '', exportedAt: rec.exportedAt || 0
+  };
+}
 export async function putSnap(rec) {
   const r = await ensureRescue();
   if (!r) return false;
-  try { await r.snaps.put(rec); return true; } catch (_) { return false; }
+  try {
+    await r.transaction('rw', r.snaps, r.snapMeta, async () => {
+      await r.snaps.put(rec);
+      await r.snapMeta.put(metaOf(rec));
+    });
+    return true;
+  } catch (_) { return false; }
 }
+// 按 key 取回整份快照正文（只在「下载 / 恢复」时调用）
 export async function getSnap(key) {
   const r = await ensureRescue();
   if (!r) return null;
@@ -44,23 +63,42 @@ export async function getSnap(key) {
 }
 export async function deleteSnap(key) {
   const r = await ensureRescue();
-  if (r) await r.snaps.delete(key);
+  if (!r) return;
+  try {
+    await r.transaction('rw', r.snaps, r.snapMeta, async () => {
+      await r.snaps.delete(key);
+      await r.snapMeta.delete(key);
+    });
+  } catch (_) {}
 }
+// 🔴 列表只读元数据表，绝不把整份 dump（含图片）拉进内存
 export async function listSnaps(type) {
   const r = await ensureRescue();
   if (!r) return [];
-  const all = await r.snaps.toArray();
-  return (type ? all.filter(s => s.type === type) : all)
+  let metas = [];
+  try { metas = await r.snapMeta.toArray(); } catch (_) { return []; }
+  if (!metas.length) {
+    // 旧库（v1 只有 snaps）升级后元数据表是空的 → 读一次正文、补写元数据，此后就不再读正文了
+    try {
+      const all = await r.snaps.toArray();
+      if (!all.length) return [];
+      metas = all.map(metaOf);
+      try { await r.snapMeta.bulkPut(metas); } catch (_) {}
+    } catch (_) { return []; }
+  }
+  return (type ? metas.filter(s => s.type === type) : metas)
     .sort((a, b) => b.exportedAt - a.exportedAt);
 }
 // 自动快照滚动保留：每个学期只留最近 keep 份（默认 3）
 export async function pruneAuto(semesterId, keep = 3) {
   const r = await ensureRescue();
   if (!r) return;
-  const mine = (await r.snaps.where('key').startsWith('auto:' + semesterId + ':').toArray())
-    .sort((a, b) => b.exportedAt - a.exportedAt);
-  const drop = mine.slice(keep);
-  for (const d of drop) { try { await r.snaps.delete(d.key); } catch (_) {} }
+  let mine = [];
+  try {
+    mine = await r.snapMeta.where('key').startsWith('auto:' + semesterId + ':').toArray();
+  } catch (_) { return; }
+  const drop = mine.sort((a, b) => b.exportedAt - a.exportedAt).slice(keep);
+  for (const d of drop) { try { await deleteSnap(d.key); } catch (_) {} }
 }
 
 // 🔴 损坏抢救：业务库 open() 抛错后（**不再有 delete 这一步**），尽最大努力用原生 IDB 把还能读出的 store dump 进 rescue。

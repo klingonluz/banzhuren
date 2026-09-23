@@ -5,7 +5,8 @@
 import { state } from './state.js';
 import { listStudents } from './db/semester.js';
 import { GUANZHU } from './db/seed.js';
-import { esc, toast, openPicker, onSeg } from './ui.js';
+import { esc, toast, openPicker, onSeg, scopeBlockHTML, bindScopeBlock } from './ui.js';
+import { download } from './util.js';
 
 // 🔴 关注类标签 → 鼓励版措辞（导出与 AI 素材都用它，不给孩子贴负面标签）
 export const ENCOURAGE = {
@@ -70,25 +71,14 @@ export async function openExport() {
   const all = await db.growth_records.where('del').equals(0).toArray();   // 🔴 过滤软删
   const gzTotal = all.filter(r => r.category === GUANZHU).length;
 
-  let scope = 'all', withImg = true, withGz = true;
-  const picked = new Set();
+  let withImg = true, withGz = true;
 
   const p = openPicker({
     title: '成长记录文本 · 实名',
     lead: '这是一份<b>给人看的文字材料</b>（可打印 / 给家长），<b>不是备份</b>；它不会联网，姓名保持真实，只存在你自己的设备上。要发给 AI 请用「分析 → AI 评语素材」。',
     body: `
       <div style="padding:14px 16px">
-        <div class="field">
-          <label>范围</label>
-          <div class="seg" id="ex-scope">
-            <button data-v="all" class="on">全班</button>
-            <button data-v="pick">指定学生</button>
-          </div>
-        </div>
-        <div id="ex-pick" style="display:none;margin:-2px 0 8px">
-          <input class="search" id="ex-q" placeholder="搜索学生 / 拼音首字母" style="border:1px solid var(--line);border-radius:8px;margin-bottom:8px">
-          <div id="ex-list"></div>
-        </div>
+${scopeBlockHTML('ex')}
         <div class="field">
           <label>带图标注 <span class="muted" style="font-weight:400;font-size:11px">带图记录后标「附现场照片 N 张」与图片说明</span></label>
           <div class="seg sm" id="ex-img">
@@ -110,8 +100,12 @@ export async function openExport() {
            <button class="btn" id="ex-copy">复制文本</button>`
   });
 
-  const current = () => scope === 'all' ? students : students.filter(s => picked.has(s.id));
-  const currentRecs = () => scope === 'all' ? all : all.filter(r => picked.has(r.studentId));
+  // 🔴 范围 + 指定学生：与分析页「AI 评语素材」共用同一实现（P2-4）
+  //    绑定里的 onChange 会在切换范围 / 增删学生后回调 refresh；它在下面才定义，靠闭包延迟求值。
+  const scopeCtl = bindScopeBlock(p.body, 'ex', students, () => refresh());
+  const picked = scopeCtl.picked;
+  const current = () => scopeCtl.isAll() ? students : students.filter(s => picked.has(s.id));
+  const currentRecs = () => scopeCtl.isAll() ? all : all.filter(r => picked.has(r.studentId));
   let text = '';
   const refresh = () => {
     const ss = current(), rs = currentRecs();
@@ -122,30 +116,8 @@ export async function openExport() {
     p.body.querySelector('#ex-pre').textContent = text;
   };
 
-  onSeg(p.body.querySelector('#ex-scope'), v => {
-    scope = v;
-    p.body.querySelector('#ex-pick').style.display = v === 'pick' ? '' : 'none';
-    refresh();
-  });
   onSeg(p.body.querySelector('#ex-img'), v => { withImg = v === '1'; refresh(); });
   onSeg(p.body.querySelector('#ex-gz'), v => { withGz = v === '1'; refresh(); });
-
-  p.body.querySelector('#ex-q').oninput = e => drawPick(e.target.value);
-  function drawPick(q = '') {
-    q = q.trim().toLowerCase();
-    const hit = students.filter(s => !q || s.name.includes(q) || (s.pinyin || '').toLowerCase().includes(q));
-    p.body.querySelector('#ex-list').innerHTML = hit.map(s =>
-      `<div class="srow ${picked.has(s.id) ? 'on' : ''}" data-s="${s.id}">${esc(s.name)}<span class="py">${esc(s.pinyin || '')}</span></div>`).join('')
-      || '<div class="empty">无匹配</div>';
-  }
-  drawPick();
-  p.body.querySelector('#ex-list').onclick = e => {
-    const row = e.target.closest('[data-s]'); if (!row) return;
-    const id = row.dataset.s;
-    if (picked.has(id)) picked.delete(id); else picked.add(id);
-    row.classList.toggle('on');
-    refresh();
-  };
 
   refresh();
 
@@ -159,11 +131,7 @@ export async function openExport() {
     }
   };
   p.foot.querySelector('#ex-down').onclick = () => {
-    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-    const u = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = u; a.download = `成长记录_${state.semester?.name || '本学期'}.txt`; a.click();
-    setTimeout(() => URL.revokeObjectURL(u), 2000);
+    download(`成长记录_${state.semester?.name || '本学期'}.txt`, text, 'text/plain');
     toast('已下载');
   };
 }

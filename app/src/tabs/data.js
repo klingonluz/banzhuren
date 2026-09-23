@@ -6,38 +6,25 @@ import {
   persistSupported, requestPersist, canInstall, promptInstall
 } from '../state.js';
 import {
-  listStudents, bulkPutStudents, listCategories, bulkPutCategories, addCategory, updateCategory, deleteCategory,
-  listTags, bulkPutTags, addTag, updateTag, deleteTag, listTemplates, bulkPutTemplates,
-  listCollections, putCollection, deleteCollection,
-  getSchedule, bulkPutRecords, listDeleted, restoreRecord, deleteSemester, openSemester, ensureOpen, countActiveRecords,
+  listStudents, bulkPutStudents, listCategories, bulkPutCategories, addCategory, updateCategory,
+  listTags, bulkPutTags, addTag, updateTag, deleteTag,
+  getSchedule, listDeleted, restoreRecord, deleteSemester, openSemester, ensureOpen, countActiveRecords,
   putImage, listImages, deleteImage, dataURLToBlob, orphanImages
 } from '../db/semester.js';
 import { nameInitials } from '../pinyin.js';
 import { PHOTO_BAN, PHOTO_OK } from '../privacy.js';
 import { openExport } from '../export.js';
-import {
-  getSetting, setSetting, listSemesters, putSemester, ensureSemester, meta
-} from '../db/meta.js';
-import { listSnaps, deleteSnap } from '../db/rescue.js';
+import { listSemesters, putSemester, ensureSemester, meta } from '../db/meta.js';
+import { listSnaps, getSnap, deleteSnap } from '../db/rescue.js';
 import { buildArchiveHTML, archiveFileName, fmtBytes } from '../archive.js';
 import { seedBaseline, WUYU, GUANZHU, CATEGORIES_SEED, TAGS_SEED } from '../db/seed.js';
-import { el, esc, toast, openPicker, closePickers, emptyState, bindEmpty, confirm, syncSeg, onSeg, banner, closeBanner, showSheet } from '../ui.js';
+import { esc, toast, openPicker, emptyState, bindEmpty, confirm, syncSeg, onSeg, banner, closeBanner, showSheet, filterStudents } from '../ui.js';
+import { download, blobToDataURL } from '../util.js';
 
-const SCHEMA_VERSION = 6;                 // 当前 schema 版本（V11.1）
-const APP_VER = 'v1.5.0';                 // 🔴 产品版本号（对外）：语义化递增，与 main.js 的 APP_VER 保持一致
+const SCHEMA_VERSION = 7;                 // 当前 schema 版本（V11.13：templates 移除 / images 去 del / 记录增复合索引）
+const APP_VER = 'v1.6.0';                 // 🔴 产品版本号（对外）：语义化递增，与 main.js 的 APP_VER 保持一致
 const PLAN_VER = 'V11.13';                // 🔴 方案版本号（内部，仅设置页可见）：与 dev/docs 里配对的方案文件同步，改功能才顺延
-const pad = n => String(n).padStart(2, '0');
 
-function blobToDataURL(blob) {
-  return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(blob); });
-}
-function download(filename, text, mime = 'application/json') {
-  const blob = new Blob([text], { type: mime + ';charset=utf-8' });
-  const u = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = u; a.download = filename; a.click();
-  setTimeout(() => URL.revokeObjectURL(u), 2000);
-}
 // 🔴 存储口径三处统一：一个函数、不写死（§4.8.18 ①-4）
 async function storageBreakdown() {
   const db = state.db;
@@ -58,22 +45,30 @@ export async function buildExportPack() {
   const records = await db.growth_records.toArray();      // 🔴 含软删记录（回收站一并备份）
   const categories = await db.categories.toArray();
   const tags = await db.tags.toArray();
-  const templates = await db.templates.toArray();
   const schedule = await getSchedule(db);
   const imgs = await listImages(db);                       // 🔴 图片在学期库
-  const images = [];
+  const images = [], imageErrors = [];
   for (const im of imgs) {
     let data = '';
     try { if (im.blob && typeof im.blob.arrayBuffer === 'function') data = await blobToDataURL(im.blob); }
     catch (e) { console.warn('图片导出失败，已跳过', im.imageId, e); }
+    if (!data) imageErrors.push(im.imageId);               // 🔴 P1-11：读不出的图如实记下来，导出后告诉老师
     images.push({ imageId: im.imageId, data });
   }
   return {
     app: '班主任工作台', schemaVersion: SCHEMA_VERSION, exportedAt: Date.now(),
     device: effectiveDeviceName(schedule),  // 🔴 始终由「本班班级 + 教师姓名」派生（设置页只读展示，不开放手填）
     semesterId: state.currentSemesterId, semester: state.semester,
-    students, categories, tags, templates, records, schedule, images
+    students, categories, tags, records, schedule, images,
+    imageErrors                                            // 备份自证：这些图这次没能带上（记录本身完整）
   };
+}
+
+// 🔴 P1-11：导出结束后如实告知丢了哪几张，别让备份「看起来成功、实际缺图」
+function warnImageErrors(pack) {
+  const n = (pack && pack.imageErrors && pack.imageErrors.length) || 0;
+  if (n) banner('exportImgBanner', `⚠️ 本次导出有 <b>${n}</b> 张图片读不出来，备份里这几张是空的（<b>记录文字本身完整</b>）。可稍后重试导出。`, 'warn');
+  return n;
 }
 
 /* ---------- 一键备份：顶部横幅「立即备份」与数据页「导出备份」走同一条路径 ---------- */
@@ -86,6 +81,7 @@ export async function quickBackup() {
   await meta.settings.put({ key: 'lastExport', value: now });
   state.settings.lastExport = now;
   closeBanner('backupBanner');
+  warnImageErrors(pack);
   return pack;
 }
 
@@ -125,15 +121,19 @@ export function openSnapList(title, snaps, badge) {
     const row = e.target.closest('[data-key]'); if (!row) return;
     const s = snaps.find(x => x.key === row.dataset.key); if (!s) return;
     if (e.target.closest('[data-dl]')) {
+      const full = await getSnap(s.key);          // 🔴 正文按需取（列表只读元数据）
+      if (!full) { banner('errBanner', '⚠️ 这份快照的正文已不在本机（可能被清理过）。'); return; }
       const fn = `班主任工作台_${s.semesterName || '学期'}_${s.type === 'auto' ? '自动' : '抢救'}_${new Date(s.exportedAt).toISOString().slice(0, 10)}.json`;
-      download(fn, JSON.stringify(s.type === 'auto' ? s.pack : buildRescuePack(s)));
+      download(fn, JSON.stringify(s.type === 'auto' ? full.pack : buildRescuePack(full)));
       toast('已下载快照文件'); return;
     }
     if (e.target.closest('[data-del]')) {
       await deleteSnap(s.key); toast('已删除该快照'); p.close(); openSnapList(title, (await listSnaps(s.type).catch(() => [])), badge); return;
     }
     if (e.target.closest('[data-im]')) {
-      const pack = s.type === 'auto' ? s.pack : buildRescuePack(s);
+      const full = await getSnap(s.key);
+      if (!full) { banner('errBanner', '⚠️ 这份快照的正文已不在本机（可能被清理过）。'); return; }
+      const pack = s.type === 'auto' ? full.pack : buildRescuePack(full);
       p.close();
       if (pack && pack.app === '班主任工作台' && Array.isArray(pack.records)) openImportPack(pack);
       else banner('errBanner', '⚠️ 该抢救快照结构不完整，无法恢复（可改用"下载"另存）。');
@@ -149,7 +149,7 @@ function buildRescuePack(s) {
     app: '班主任工作台', schemaVersion: SCHEMA_VERSION, exportedAt: s.exportedAt,
     device: s.device || s.dbName || '抢救', semesterId: state.currentSemesterId, semester: state.semester,
     students, categories: stores.categories || [], tags: stores.tags || [],
-    templates: stores.templates || [], records, schedule: (stores.schedule || [])[0] || null,
+    records, schedule: (stores.schedule || [])[0] || null,
     images: (stores.images || []).map(im => ({ imageId: im.imageId, data: '' }))
   };
 }
@@ -166,7 +166,14 @@ export async function housekeeping() {
     const days = +(state.settings.recycleDays || 30);
     const cut = Date.now() - days * 86400000;
     const del = await listDeleted(state.db);
-    for (const r of del) if (r.del && r.del < cut) await state.db.growth_records.delete(r.id);
+    let dropped = 0;
+    for (const r of del) if (r.del && r.del < cut) { await state.db.growth_records.delete(r.id); dropped++; }
+    // 🔴 P1-2：记录既然过期删掉了，它的图片就再没有任何记录引用 → 一并清掉。
+    //    否则「彻底删除」连图一起删、「过期自动清」只删记录，两种口径不一致，图片白占空间。
+    //    孤儿图判定把回收站里还在的记录也算作引用，所以不会误删将来还要恢复的图。
+    if (dropped) {
+      for (const o of await orphanImages(state.db)) { try { await deleteImage(state.db, o.imageId); } catch {} }
+    }
   } catch {}
 }
 
@@ -246,7 +253,7 @@ function semesterCard(sto) {
     <div class="kv"><span>记录 / 图片 / 占用</span><b>${sto.recN} 条 · ${sto.imgN} 张 · ${fmtMB(sto.total)}</b></div>
     <button class="btn ghost mt" id="dt-sem">切换 / 管理学期</button>
     <button class="btn danger mt" id="dt-archive">归档本学期（生成归档文件）</button>
-    <div class="save-note">一学期一库；新建默认继承在册名单 + 分类 + 标签库 + 模板，<b>不继承</b>记录 / 图片 / 课表 / 收缴。<b>归档只生成文件、不动本机数据</b>；要省空间，归档后再到档案柜点「清除本机副本」。</div>
+    <div class="save-note">一学期一库；新建默认继承在册名单 + 分类 + 标签库，<b>不继承</b>记录 / 图片 / 课表 / 收缴。<b>归档只生成文件、不动本机数据</b>；要省空间，归档后再到档案柜点「清除本机副本」。</div>
   </div>`;
 }
 function backupCard() {
@@ -280,7 +287,9 @@ function cabinetCard(archived) {
           <div class="fn">归档于 ${day}</div>
           <div class="fn">📄 ${esc(f.json || s.archivedFileName || '未记录文件名')}</div>
           <div class="fn">🌐 ${esc(f.html || '未记录文件名')}</div>
-          <div class="fn">${s.status === 'cleared' ? '本机数据已清除（归档文件应已存在你的电脑 / 网盘上）' : `本机副本：保留中${size ? ' · ' + size : ''}`}</div>
+          <div class="fn">${s.status === 'cleared'
+            ? `本机数据已于 ${s.clearedAt ? new Date(s.clearedAt).toLocaleDateString('zh-CN') : '—'} 清除（归档文件应已存在你的电脑 / 网盘上）`
+            : `本机副本：保留中${size ? ' · ' + size : ''}`}</div>
         </div>
         <div style="display:flex;flex-direction:column;gap:6px">
           ${s.status === 'archived' ? `<button class="mini danger" data-clear-copy="${esc(s.id)}">清除本机副本</button>` : ''}
@@ -333,12 +342,11 @@ async function drawStudents(box) {
       <button class="btn ghost tiny" id="mg-add">＋ 单个手加</button>
       <button class="btn ghost tiny danger" id="mg-clear" style="margin-left:auto">🗑️ 清空全部</button>
     </div>
-    <input class="search" id="mg-q" placeholder="搜索 姓名 / 拼音首字母" style="border:1px solid var(--line);border-radius:8px;margin:10px 0">
+    <input class="search" id="mg-q" type="search" enterkeyhint="search" placeholder="搜索 姓名 / 拼音首字母" style="border:1px solid var(--line);border-radius:8px;margin:10px 0">
     <div id="mg-list"></div>`;
   const list = box.querySelector('#mg-list');
   const drawList = q => {
-    q = (q || '').trim().toLowerCase();
-    const hit = students.filter(s => !q || s.name.includes(q) || (s.pinyin || '').toLowerCase().includes(q));
+    const hit = filterStudents(students, q);
     list.innerHTML = hit.length ? hit.map(s => `
       <div class="li" data-id="${esc(s.id)}" style="${s.out ? 'opacity:.55' : ''}">
         <div style="flex:1;min-width:0">
@@ -381,9 +389,11 @@ async function drawStudents(box) {
     msg: '将删除本班全部学生，并一并清除本学期所有成长记录与图片（仅本学期）。\n\n用于替换为你的真实名单，操作不可恢复。',
     okText: '清空并重建', onOk: async () => {
       try {
-        const recs = await db.growth_records.toArray();
-        for (const r of recs) for (const id of (r.imageIds || [])) { try { await deleteImage(db, id); } catch {} }
-        await db.growth_records.clear(); await db.students.clear();
+        // 🔴 P1-10：直接清空图片池 —— 这个动作本就承诺「本学期所有记录与图片」。
+        //    旧写法只按记录的 imageIds 逐张删，此前留下的孤儿图（如保存失败）会残留在库里白占空间。
+        await db.growth_records.clear();
+        await db.students.clear();
+        await db.images.clear();
         toast('已清空，可粘贴 / 手加真实名单'); drawStudents(box);
       } catch (e) { toast('清空失败：' + e.message); }
     }
@@ -559,7 +569,7 @@ function editPresetComment(t) {
 export function openSemesters() {
   const p = openPicker({
     title: '学期管理',
-    lead: '一学期一库。新建默认继承在册名单 + 分类 + 标签库 + 模板；记录 / 图片 / 课表 / 收缴不继承。',
+    lead: '一学期一库。新建默认继承在册名单 + 分类 + 标签库；记录 / 图片 / 课表 / 收缴不继承。',
     body: '<div style="padding:12px 14px" id="sm-box"></div>',
     foot: `<button class="btn ghost" data-pclose>关闭</button><button class="btn" id="sm-new">＋ 新建学期</button>`
   });
@@ -597,12 +607,10 @@ export function openSemesters() {
       const stu = (await from.students.toArray()).filter(s => !s.out).map(s => ({ ...s, id: 's' + Math.random().toString(36).slice(2, 9), pinyin: s.pyManual ? s.pinyin : nameInitials(s.name) }));
       const tg = await from.tags.toArray();
       const cats = await from.categories.toArray();
-      const tpl = await from.templates.toArray();
       const to = openSemester(ns.id);
       await bulkPutStudents(to, stu);
       await bulkPutTags(to, tg.length ? tg : TAGS_SEED);
       await bulkPutCategories(to, cats.length ? cats : CATEGORIES_SEED);
-      await bulkPutTemplates(to, tpl.length ? tpl : []);
     } catch {}
     sems.forEach(s => { if (s.status === 'active') putSemester({ ...s, status: 'inactive' }); });
     await switchSemester(ns); p.close();
@@ -651,6 +659,7 @@ async function doArchive() {
     return;
   }
   toast('已归档：两份文件已下载，请存到电脑或网盘');
+  warnImageErrors(pack);                        // 🔴 若有图没带上，如实告知（归档包同样要可信）
   banner('archiveBanner',
     `📚 「${esc(sem?.name || '本学期')}」已归档。请把刚下载的两份文件（<b>.json</b> 备份 / <b>.html</b> 只读报告）存到电脑或网盘 —— 那是唯一能跨设备带走数据的方式。要省空间，可到「归档档案柜」点「清除本机副本」。`,
     'warn');
@@ -860,16 +869,19 @@ async function showDiff(pack, kind, parent) {
           }
         }
       });
-      // 图片（学期库）
+      // 图片（学期库）：🔴 P1-11 —— 统计失败张数，「看起来导入成功、其实缺图」是老师最难发现的坑
+      let imgBad = 0;
       for (const im of (pack.images || [])) {
-        try { await putImage(tdb, im.imageId, dataURLToBlob(im.data)); } catch {}
+        try {
+          if (!im.data) { imgBad++; continue; }              // 导出那一端就没带上（图片读不出来）
+          await putImage(tdb, im.imageId, dataURLToBlob(im.data));
+        } catch { imgBad++; }
       }
-      // 分类 / 标签 / 模板：按 id 增量合并（不覆盖本地已有）
+      // 分类 / 标签：按 id 增量合并（不覆盖本地已有）
       await mergeById(tdb.categories, pack.categories);
       await mergeById(tdb.tags, pack.tags);
-      await mergeById(tdb.templates, pack.templates);
       if (!isNew && pack.schedule) await saveSchedSafe(tdb, pack.schedule);
-      toast(`导入完成：${isNew ? '新建学期，' : ''}新增 ${added.length}，更新 ${changed.length}${skipped.length ? `，跳过 ${skipped.length}` : ''}`);
+      toast(`导入完成：${isNew ? '新建学期，' : ''}新增 ${added.length}，更新 ${changed.length}${skipped.length ? `，跳过 ${skipped.length}` : ''}${imgBad ? `，${imgBad} 张图片未能导入` : ''}`);
       p.close(); parent.close(); refresh();
     } catch (e) { toast('导入失败，已回滚：' + e.message); }
   };

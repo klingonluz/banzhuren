@@ -4,15 +4,16 @@
 import { state, saveSetting } from '../state.js';
 import { listStudents } from '../db/semester.js';
 import { GUANZHU } from '../db/seed.js';
-import { esc, toast, openPicker, syncSeg, onSeg } from '../ui.js';
+import { esc, toast, openPicker, syncSeg, onSeg, scopeBlockHTML, bindScopeBlock } from '../ui.js';
 import { buildAliasMap, buildScrubbedText, describeHits, highlight, MASK } from '../privacy.js';
 import { tagText } from '../export.js';
 
 export async function mount(scrollEl) {
   const db = state.db;
   const students = await listStudents(db);
-  const all = await db.growth_records.where('del').equals(0).toArray();   // 🔴 过滤软删
-  const gzTotal = all.filter(r => r.category === GUANZHU).length;
+  // 🔴 红线1：进本页不再 toArray() 拉全表。这里只需要「关注类记录几条」（走 category 索引 count），
+  //    真正的全部记录要等到点「生成素材」那一刻再按需分页读取（loadAllRecords）。
+  const gzTotal = await db.growth_records.where('category').equals(GUANZHU).and(r => r.del === 0).count();
 
   scrollEl.innerHTML = `
     <div class="card">
@@ -37,8 +38,23 @@ export async function mount(scrollEl) {
       </div>
     </div>`;
 
-  scrollEl.querySelector('#an-ai').onclick = () => openAI(students, all, 'gen');
-  scrollEl.querySelector('#an-ai-back').onclick = () => openAI(students, all, 'back');
+  scrollEl.querySelector('#an-ai').onclick = () => openAI(students, 'gen');
+  scrollEl.querySelector('#an-ai-back').onclick = () => openAI(students, 'back');
+}
+
+// 按需分页读取本学期全部记录：每次只取一页，避免一次性 toArray() 把整表物化（红线1）。
+// 只在老师点「生成素材」时调用一次，结果留在面板内存里供切换范围时复用。
+async function loadAllRecords(db) {
+  const PAGE = 300;
+  const out = [];
+  let off = 0;
+  for (;;) {
+    const part = await db.growth_records.where('del').equals(0).offset(off).limit(PAGE).toArray();
+    out.push(...part);
+    if (part.length < PAGE) break;
+    off += PAGE;
+  }
+  return out;
 }
 
 /* ================= AI 评语素材（脱敏 · 唯一外发口） ================= */
@@ -46,9 +62,9 @@ export async function mount(scrollEl) {
 //    lastGen 保存「最近一次生成素材」用的映射，供同一次使用内回填还原姓名；刷新页面即失效。
 let lastGen = null;      // { map: Map<id,alias>, names: Map<id,name>, at: number }
 
-function openAI(students, all, tab = 'gen') {
-  let scope = 'all', withGz = true, grain = state.settings.aiDateGrain === 'full' ? 'full' : 'month';
-  const picked = new Set();
+function openAI(students, tab = 'gen') {
+  let withGz = true, grain = state.settings.aiDateGrain === 'full' ? 'full' : 'month';
+  let all = [], loading = true;                 // 🔴 记录按需载入（loadAllRecords），不再进页面就拉全表
 
   const p = openPicker({
     title: 'AI 评语素材',
@@ -60,14 +76,7 @@ function openAI(students, all, tab = 'gen') {
         </div>
 
         <div id="ai-gen" style="margin-top:12px">
-          <div class="field">
-            <label>范围</label>
-            <div class="seg" id="ai-scope"><button data-v="all" class="on">全班</button><button data-v="pick">指定学生</button></div>
-          </div>
-          <div id="ai-pick" style="display:none;margin:-2px 0 8px">
-            <input class="search" id="ai-q" placeholder="搜索学生 / 拼音首字母" style="border:1px solid var(--line);border-radius:8px;margin-bottom:8px">
-            <div id="ai-list"></div>
-          </div>
+${scopeBlockHTML('ai')}
           <div class="field">
             <label>关注类记录 <span class="muted" style="font-weight:400;font-size:11px">负面描述会自动转成「可努力的方向」</span></label>
             <div class="seg sm" id="ai-gz"><button data-v="1" class="on">包含</button><button data-v="0">排除</button></div>
@@ -76,7 +85,7 @@ function openAI(students, all, tab = 'gen') {
             <label>日期精度 <span class="muted" style="font-weight:400;font-size:11px">精确日期能定位到具体某天</span></label>
             <div class="seg sm" id="ai-date"><button data-v="month" class="on">只到月</button><button data-v="full">保留完整</button></div>
           </div>
-          <div class="save-note" style="margin:6px 0">🔒 已隐去：<b>真实姓名</b>→代号 · 其他同学→「某同学」 · 分数 / 名次→〔已隐去〕 · 日期→按月。代号仅本次有效。</div>
+          <div class="save-note" style="margin:6px 0">🔒 已隐去：<b>真实姓名</b>→代号 · 其他同学→「某同学」 · 分数→${esc(MASK.score)} · 名次→${esc(MASK.rank)} · 日期→按月。代号仅本次有效。</div>
           <div class="muted" id="ai-stat" style="font-size:12px;margin-bottom:6px"></div>
           <div class="ai-pre" id="ai-pre"></div>
         </div>
@@ -99,8 +108,11 @@ function openAI(students, all, tab = 'gen') {
   const backBox = p.body.querySelector('#ai-back');
   const copyBtn = p.foot.querySelector('#ai-copy');
 
-  const current = () => scope === 'all' ? students : students.filter(s => picked.has(s.id));
-  const currentRecs = () => scope === 'all' ? all : all.filter(r => picked.has(r.studentId));
+  // 🔴 范围 + 指定学生：与数据页「成长记录文本」共用同一实现（P2-4）
+  const scopeCtl = bindScopeBlock(p.body, 'ai', students, () => refresh());
+  const picked = scopeCtl.picked;
+  const current = () => scopeCtl.isAll() ? students : students.filter(s => picked.has(s.id));
+  const currentRecs = () => scopeCtl.isAll() ? all : all.filter(r => picked.has(r.studentId));
   const allNames = students.map(s => s.name);
   // 🔴 每条记录的正文：日期 + 分类 + 标签 + 评语（+ 图片说明）。
   //    🔴 照片本身绝不出现在素材里；「图片说明」是老师写的文字，等同于评语，会一并被脱敏。
@@ -114,6 +126,11 @@ function openAI(students, all, tab = 'gen') {
 
   let text = '', patterns = [];
   const refresh = () => {
+    if (loading) {                                   // 记录还在读 → 明确告知，别让老师以为"没有记录"
+      p.body.querySelector('#ai-stat').textContent = '正在载入本学期记录…';
+      p.body.querySelector('#ai-pre').textContent = '';
+      return;
+    }
     const ss = current();
     const rs = (withGz ? currentRecs() : currentRecs().filter(r => r.category !== GUANZHU));
     // 🔴 只对本次选中的学生编号 —— 代号集合最小化
@@ -144,32 +161,10 @@ function openAI(students, all, tab = 'gen') {
     copyBtn.style.display = v === 'gen' ? '' : 'none';
     if (v === 'back') backNote();
   });
-  onSeg(p.body.querySelector('#ai-scope'), v => {
-    scope = v;
-    p.body.querySelector('#ai-pick').style.display = v === 'pick' ? '' : 'none';
-    refresh();
-  });
   onSeg(p.body.querySelector('#ai-gz'), v => { withGz = v === '1'; refresh(); });
   onSeg(p.body.querySelector('#ai-date'), v => {
     grain = v; saveSetting('aiDateGrain', v); refresh();
   });
-
-  p.body.querySelector('#ai-q').oninput = e => drawPick(e.target.value);
-  function drawPick(q = '') {
-    q = q.trim().toLowerCase();
-    const hit = students.filter(s => !q || s.name.includes(q) || (s.pinyin || '').toLowerCase().includes(q));
-    p.body.querySelector('#ai-list').innerHTML = hit.map(s =>
-      `<div class="srow ${picked.has(s.id) ? 'on' : ''}" data-s="${s.id}">${esc(s.name)}<span class="py">${esc(s.pinyin || '')}</span></div>`).join('')
-      || '<div class="empty">无匹配</div>';
-  }
-  drawPick();
-  p.body.querySelector('#ai-list').onclick = e => {
-    const row = e.target.closest('[data-s]'); if (!row) return;
-    const id = row.dataset.s;
-    if (picked.has(id)) picked.delete(id); else picked.add(id);
-    row.classList.toggle('on');
-    refresh();
-  };
 
   syncSeg(p.body.querySelector('#ai-tab'), tab);
   genBox.style.display = tab === 'gen' ? '' : 'none';
@@ -177,8 +172,13 @@ function openAI(students, all, tab = 'gen') {
   copyBtn.style.display = tab === 'gen' ? '' : 'none';
   syncSeg(p.body.querySelector('#ai-date'), grain);
   refresh();
+  // 🔴 按需载入：面板先开起来（可交互），记录读完再刷新一次预览
+  loadAllRecords(state.db)
+    .then(rows => { all = rows; loading = false; refresh(); })
+    .catch(() => { loading = false; refresh(); });
 
   copyBtn.onclick = async () => {
+    if (loading) { toast('记录还在读取中，稍等一下'); return; }
     try {
       await navigator.clipboard.writeText(text);
       toast('已复制脱敏素材 · 照片不要发给 AI');

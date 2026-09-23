@@ -1,12 +1,12 @@
 // 学期库（每学期一个独立 IndexedDB 数据库）
-// V11.1 数据层：图片移入学期库；新增 categories / templates / collections；tasks → collections
+// V11.1 数据层：图片移入学期库；新增 categories / collections；tasks → collections
 const Dexie = window.Dexie;
 import { classifyDbError, DB_ERR_CORRUPT, DbOpenError, migrateQuietly } from './migrate.js';
 
 const cache = new Map();
 
 // 构造学期库实例（每次都用全新 Dexie，避免复用损坏实例）
-// 🔴 版本号迁移：v1=旧版(五育) schema（用于良好旧库的增量升级），v2=V11.1 完整 schema。
+// 🔴 版本号迁移：v1=旧版(五育) schema（用于良好旧库的增量升级），v2=V11.1 完整 schema，v3=V11.13 简化。
 function buildDb(semesterId) {
   const db = new Dexie('bzr_' + semesterId);
   // 红线1：分页用 offset().limit() / [del+date] 索引，禁止 toArray() 拉全表
@@ -23,11 +23,22 @@ function buildDb(semesterId) {
     growth_records: 'id, studentId, date, category, del, [del+date], [studentId+date]',
     categories:     'id, cat, kind, del',          // 能力分类（ability）/ 关注（internal），全部可编辑
     tags:           'id, name, category, starred, del',   // 标签库（70 预设 + 自定义）
-    templates:      'id, name, category, starred, del',   // 记录模板（自定义内容双轨）
+    templates:      'id, name, category, starred, del',   // 记录模板（V11.13 已整表移除）
     images:         'imageId, updatedAt, del',      // 🔴 图片在学期库（随归档一起删）
     collections:    'id, name',                     // 收缴单（临时态，不进备份）
     schedule:       'id',                            // 课表（单行 json）
     tasks:          null                             // 旧 tasks 表移除（→ collections）
+  });
+  // 🔴 v3（V11.13 简化三处）：
+  //    ① templates 整表移除 —— 功能从没落地（无 UI 入口、记录里的 templateId 零读取），留着只是每次备份多导一张空表；
+  //    ② images 去掉 del 索引 —— deleteImage 一直是硬删除，del 永远为 0，索引恒真且白占空间；
+  //    ③ growth_records 增 [del+category+date] —— 分类筛选从此走索引分页，不再把整个分类拉进内存再 sort/slice。
+  //    ⚠️ 改 stores() 必须同时 bump Dexie 版本号：否则 Dexie 抛 SchemaError，会被 classifyDbError 归到
+  //    「corrupt」档显示兜底页（数据其实没坏，老师却以为坏了）。只加字段不用 bump，交给 migrate.js 补默认值。
+  db.version(3).stores({
+    growth_records: 'id, studentId, date, category, del, [del+date], [studentId+date], [del+category+date]',
+    images:         'imageId, updatedAt',
+    templates:      null                             // 需要记录模板时再加回来
   });
   return db;
 }
@@ -95,12 +106,9 @@ export async function backfillPinyin(db) {
 export async function bulkPutStudents(db, rows) {
   await db.students.bulkPut(rows);
 }
-export async function getStudent(db, id) {
-  return await db.students.get(id);
-}
 
 // ---------- 成长记录 ----------
-// rec: { id, studentId, date, category, text, tags[], imageIds[], templateId, updatedAt, del:0 }
+// rec: { id, studentId, date, category, text, tags[], imageIds[], imgDescs[], updatedAt, del:0 }
 export async function addRecord(db, rec) {
   await db.growth_records.put(rec);
 }
@@ -119,6 +127,35 @@ export async function listRecordsPage(db, { offset = 0, limit = 20 } = {}) {
 }
 export async function countActiveRecords(db) {
   return await db.growth_records.where('del').equals(0).count();
+}
+// 按分类分页（🔴 走 [del+category+date] 复合索引，不再把整个分类 toArray() 进内存再 sort/slice）
+export async function listRecordsByCategoryPage(db, category, { offset = 0, limit = 20 } = {}) {
+  return await db.growth_records
+    .where('[del+category+date]')
+    .between([0, category, Dexie.minKey], [0, category, Dexie.maxKey])
+    .reverse().offset(offset).limit(limit).toArray();
+}
+// 「有图」分页：图片有无无法用索引表达（imageIds 是数组），所以**逐页扫描**——
+// 每次只把正在扫的那一页读进内存，凑够 limit 条带图记录即停；扫描总量设上限，极端情况也不会卡死。
+export async function listRecordsWithImgPage(db, { offset = 0, limit = 20 } = {}) {
+  const SCAN = 200, SCAN_MAX = 5000;
+  const out = [];
+  let skip = offset, scanned = 0, off = 0;
+  while (out.length < limit && scanned < SCAN_MAX) {
+    const page = await db.growth_records
+      .where('[del+date]')
+      .between([0, Dexie.minKey], [0, Dexie.maxKey])
+      .reverse().offset(off).limit(SCAN).toArray();
+    if (!page.length) break;
+    off += page.length; scanned += page.length;
+    for (const r of page) {
+      if (!(r.imageIds || []).length) continue;
+      if (skip > 0) { skip--; continue; }
+      out.push(r);
+      if (out.length >= limit) break;
+    }
+  }
+  return out;
 }
 export async function recordsByStudent(db, studentId) {
   return await db.growth_records.where('studentId').equals(studentId).and(r => r.del === 0).reverse().toArray();
@@ -150,16 +187,10 @@ export async function addCategory(db, cat) {
 export async function updateCategory(db, id, patch) {
   await db.categories.update(id, patch);
 }
-export async function deleteCategory(db, id) {
-  await db.categories.delete(id);
-}
 
 // ---------- 标签库 ----------
 export async function listTags(db) {
   return await db.tags.where('del').equals(0).toArray();
-}
-export async function listAllTags(db) {
-  return await db.tags.toArray();
 }
 export async function bulkPutTags(db, rows) {
   await db.tags.bulkPut(rows);
@@ -179,44 +210,27 @@ export async function incTagUse(db, name, by = 1) {
   if (t) await db.tags.update(t.id, { useCount: (t.useCount || 0) + by });
 }
 
-// ---------- 模板（自定义内容双轨）----------
-export async function listTemplates(db) {
-  return await db.templates.where('del').equals(0).toArray();
-}
-export async function bulkPutTemplates(db, rows) {
-  await db.templates.bulkPut(rows);
-}
-export async function addTemplate(db, tpl) {
-  await db.templates.put(tpl);
-}
-export async function updateTemplate(db, id, patch) {
-  await db.templates.update(id, patch);
-}
-export async function deleteTemplate(db, id) {
-  await db.templates.delete(id);
-}
-
 // ---------- 图片（🔴 在学期库）----------
 export async function putImage(db, imageId, blob) {
-  await db.images.put({ imageId, blob, updatedAt: Date.now(), del: 0 });
+  await db.images.put({ imageId, blob, updatedAt: Date.now() });
 }
 export async function getImageBlob(db, imageId) {
   const r = await db.images.get(imageId);
   return r ? r.blob : null;
 }
 export async function listImages(db) {
-  return await db.images.where('del').equals(0).toArray();
+  return await db.images.toArray();
 }
 export async function deleteImage(db, imageId) {
   await db.images.delete(imageId);
 }
-// 孤儿图 = 图片池 - 所有记录引用的图（🔴 回收站里的图不释放，恢复还要用）
+// 孤儿图 = 图片池 - 所有记录引用的图（🔴 回收站里的记录也算引用，恢复还要用）
+// 🔴 只取图片主键（orderBy().keys()），绝不把整张照片读进内存 —— 设置页每次打开都会调它
 export async function orphanImages(db) {
-  const imgs = await db.images.toArray();
+  const imgs = await db.images.orderBy('imageId').keys();
   const used = new Set();
-  const recs = await db.growth_records.toArray();
-  recs.forEach(r => (r.imageIds || []).forEach(id => used.add(id)));
-  return imgs.filter(i => !used.has(i.imageId));
+  await db.growth_records.each(r => (r.imageIds || []).forEach(id => used.add(id)));
+  return imgs.filter(id => !used.has(id)).map(imageId => ({ imageId }));
 }
 // dataURL -> Blob（导入图片用）
 export function dataURLToBlob(dataURL) {

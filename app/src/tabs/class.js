@@ -3,7 +3,7 @@
 // 课表模型：本班课表 homeroom（班主任只负责一个班，单一固定，无班级选择）+ 我的课表 mine（跨班自填，每格 {subject,cls}）+ 授课班级 teachClasses（跨班任教）+ 自定义科目 customSubjects
 import { state } from '../state.js';
 import { listStudents, listCollections, putCollection, deleteCollection, getSchedule, saveSchedule } from '../db/semester.js';
-import { esc, toast, openPicker, emptyState, confirm, syncSeg, onSeg } from '../ui.js';
+import { esc, toast, openPicker, emptyState, confirm, onSeg, filterStudents } from '../ui.js';
 
 const DAYS = ['周一', '周二', '周三', '周四', '周五'];
 const SUBJECTS = ['语文', '数学', '英语', '科学', '体育', '音乐', '美术', '信息', '劳技', '阅读', '班会', '自习', ''];
@@ -167,27 +167,37 @@ function scheduleCard(sched) {
   </div>`;
 }
 
+/* ---- 科目 chips：两处（周课表单选 / 我的课表「科目+班级」）共用，避免副本各改一半（P2-4） ---- */
+const PROMPT_SUBJECT = '自定义科目名称（如：校本 / 心理 / 写字）';
+// 选中态由调用方通过 cur 传入；末尾两项是「＋ 自定义科目」「（清空）」
+function subjectChipsHTML(all, cur) {
+  return all.map(s => `<span class="chip ${s === cur ? 'on' : ''}" data-s="${esc(s)}">${esc(s)}</span>`).join('')
+    + '<span class="chip" data-custom="1">＋ 自定义科目</span><span class="chip" data-s="">（清空）</span>';
+}
+// 弹窗里问一个自定义科目名并落进 sched.customSubjects（已存在则不重复加）；返回新名字或 ''
+function addCustomSubject(sched, save, name) {
+  const nm = (name || '').trim();
+  if (!nm) return '';
+  if (!(sched.customSubjects || []).includes(nm)) {
+    sched.customSubjects = [...(sched.customSubjects || []), nm];
+    if (save) save();
+  }
+  return nm;
+}
+
 /* ================= ② 周课表（按选中班级编辑） ================= */
 function subjectPicker(cur, sched, onPick, save) {
   const all = allSubjects(sched);
   const p = openPicker({
     title: '选择科目',
-    body: `<div style="padding:12px 14px" class="chips">
-      ${all.map(s => `<span class="chip ${s === cur ? 'on' : ''}" data-s="${esc(s)}">${esc(s)}</span>`).join('')}
-      <span class="chip" data-custom="1">＋ 自定义科目</span>
-      <span class="chip" data-s="">（清空）</span>
-    </div>`,
+    body: `<div style="padding:12px 14px" class="chips">${subjectChipsHTML(all, cur)}</div>`,
     foot: `<button class="btn ghost" data-pclose>取消</button>`
   });
   p.body.onclick = e => {
     const cs = e.target.closest('[data-custom]');
     if (cs) {
-      const name = (window.prompt('自定义科目名称（如：校本 / 心理 / 写字）') || '').trim();
-      if (name) {
-        if (!(sched.customSubjects || []).includes(name)) sched.customSubjects = [...(sched.customSubjects || []), name];
-        if (save) save();
-        onPick(name); p.close();
-      }
+      const name = addCustomSubject(sched, save, window.prompt(PROMPT_SUBJECT) || '');
+      if (name) { onPick(name); p.close(); }
       return;
     }
     const c = e.target.closest('[data-s]');
@@ -261,8 +271,7 @@ function openMineCell(cur, sched, onPick, save) {
     title: '填写本节课',
     body: `<div style="padding:12px 14px">
       <label class="muted" style="font-size:12px">科目</label>
-      <div class="chips" id="mc-subs">${all.map(s => `<span class="chip ${cur?.subject === s ? 'on' : ''}" data-s="${esc(s)}">${esc(s)}</span>`).join('')}
-        <span class="chip" data-custom="1">＋ 自定义科目</span><span class="chip" data-s="">（清空）</span></div>
+      <div class="chips" id="mc-subs">${subjectChipsHTML(all, cur?.subject)}</div>
       <label class="muted" style="font-size:12px;display:block;margin-top:12px">班级（跨班任教时选对应班）</label>
       <div class="chips" id="mc-cls">${classList().length
         ? classList().map(c => `<span class="chip ${cur?.cls === c.name ? 'on' : ''}" data-c="${esc(c.name)}">${esc(c.name)}</span>`).join('')
@@ -284,9 +293,8 @@ function openMineCell(cur, sched, onPick, save) {
   subBox.onclick = e => {
     const cs = e.target.closest('[data-custom]');
     if (cs) {
-      const nm = (window.prompt('自定义科目名称（如：校本 / 心理 / 写字）') || '').trim();
+      const nm = addCustomSubject(sched, save, window.prompt(PROMPT_SUBJECT) || '');
       if (nm) {
-        if (!(sched.customSubjects || []).includes(nm)) { sched.customSubjects = [...(sched.customSubjects || []), nm]; save(); }
         subject = nm;
         subBox.querySelectorAll('.chip').forEach(x => x.classList.remove('on'));
         const sp = document.createElement('span'); sp.className = 'chip on'; sp.dataset.s = nm; sp.textContent = nm; subBox.appendChild(sp);
@@ -598,7 +606,7 @@ function openRoll(coll, db, rerender) {
   const p = openPicker({
     title: coll.name,
     body: `<div style="padding:12px 14px">
-      <input class="search" id="rl-q" placeholder="搜索姓名 / 拼音首字母" style="border:1px solid var(--line);border-radius:8px;margin-bottom:8px">
+      <input class="search" id="rl-q" type="search" enterkeyhint="search" placeholder="搜索姓名 / 拼音首字母" style="border:1px solid var(--line);border-radius:8px;margin-bottom:8px">
       <div class="row" style="gap:8px;margin-bottom:8px">
         <div class="seg" id="rl-view"><button data-v="grid" class="on">网格</button><button data-v="list">列表</button></div>
         <div class="seg" id="rl-filter"><button data-v="all" class="on">全部</button><button data-v="no">未交</button><button data-v="yes">已交</button></div>
@@ -611,8 +619,7 @@ function openRoll(coll, db, rerender) {
   listStudents(db).then(ss => { students.push(...ss); draw(); });
 
   const draw = () => {
-    const q = (p.body.querySelector('#rl-q').value || '').trim().toLowerCase();
-    let list = students.filter(s => !q || s.name.includes(q) || (s.pinyin || '').toLowerCase().includes(q));
+    let list = filterStudents(students, p.body.querySelector('#rl-q').value);
     if (filter === 'no') list = list.filter(s => !paid.has(s.id));
     if (filter === 'yes') list = list.filter(s => paid.has(s.id));
     list.sort((a, b) => (paid.has(a.id) ? 1 : 0) - (paid.has(b.id) ? 1 : 0));
@@ -672,7 +679,6 @@ export async function mount(scrollEl) {
   };
 
   function bind() {
-    const todayBox = document.getElementById('cl-today');
     onSeg(scrollEl.querySelector('#cl-season'), v => { season = v; const tb = document.getElementById('cl-today'); if (tb) tb.innerHTML = todayListHTML(sched); });
     onSeg(scrollEl.querySelector('#cl-mode'), v => { schedMode = v; render(); });
     const tcBtn = scrollEl.querySelector('#cl-classes');

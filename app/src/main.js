@@ -7,7 +7,7 @@ import {
 import { getSetting, setSetting, meta, listSemesters } from './db/meta.js';
 import { openSemester, listStudents, bulkPutStudents } from './db/semester.js';
 import { nameInitials } from './pinyin.js';
-import { el, esc, toast, banner, closeBanner, openPicker, closePickers } from './ui.js';
+import { el, esc, toast, banner, openPicker } from './ui.js';
 import { mount as mountRecord, flushDraft } from './tabs/record.js';
 import { mount as mountClass } from './tabs/class.js';
 import { mount as mountAnalysis } from './tabs/analysis.js';
@@ -27,7 +27,7 @@ let activeTab = 'record';
 // 🔴 产品版本号（对外：页脚展示 + 更新 UI）。语义化：修 bug 升末位（v1.0.1）、
 //    加功能升中位（v1.1.0）、数据结构不兼容升首位（v2.0.0）。首个公开发布 = v1.0.0。
 //    注意：内部还有一套「方案文档版本号」（如 V11.10），只用于设计记录，不对外，见 tabs/data.js 的 PLAN_VER。
-const APP_VER = 'v1.5.0';
+const APP_VER = 'v1.6.0';
 // 🔴 部署网址锚点（换网址风险防护，§13.7.1）：留空 = 首次启动自动记录当前 origin 并比对；
 //    上线固定域名后建议填死，例如 'https://banzhuren.example.com'，网址变化即弹告警提醒导入备份。
 const EXPECTED_ORIGIN = '';
@@ -47,7 +47,7 @@ function shell() {
         <div class="title">班主任工作台</div>
         <div class="sub" id="sem-name">—</div>
       </div>
-      <div class="avatar" id="sem-avatar" title="${esc(avatarTitle())}">${esc(teacherInitial() || AVATAR_EMPTY)}</div>
+      <div class="avatar" id="sem-avatar" role="button" tabindex="0" aria-label="学期与姓名菜单" title="${esc(avatarTitle())}">${esc(teacherInitial() || AVATAR_EMPTY)}</div>
     </div>
     <div class="banners" id="banners"></div>
     <div class="sem-pop" id="sem-pop"></div>
@@ -74,7 +74,10 @@ function shell() {
     const b = e.target.closest('.tab'); if (!b) return;
     switchTab(b.dataset.tab);
   };
-  app.querySelector('#sem-avatar').onclick = toggleSemPop;
+  // 🔴 头像入口可键盘操作（P2-6）：它是「改姓名 / 切学期」的唯一入口，只认鼠标点不合适
+  const avatarBtn = app.querySelector('#sem-avatar');
+  avatarBtn.onclick = toggleSemPop;
+  avatarBtn.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSemPop(); } };
   app.querySelector('#dt-check-update').onclick = checkForUpdate;
   const um = app.querySelector('#updateMask');
   um.querySelector('#um-later').onclick = () => um.classList.remove('show');
