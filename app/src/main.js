@@ -8,7 +8,7 @@ import { getSetting, setSetting, meta, listSemesters } from './db/meta.js';
 import { openSemester, listStudents, bulkPutStudents } from './db/semester.js';
 import { nameInitials } from './pinyin.js';
 import { el, esc, toast, banner, openPicker } from './ui.js';
-import { mount as mountRecord, flushDraft } from './tabs/record.js';
+import { mount as mountRecord } from './tabs/record.js';
 import { mount as mountClass } from './tabs/class.js';
 import { mount as mountAnalysis } from './tabs/analysis.js';
 import { mount as mountData, housekeeping, quickBackup, openSettings, openSemesters, switchSemester, openSnapList, openImportPack } from './tabs/data.js';
@@ -27,7 +27,7 @@ let activeTab = 'record';
 // 🔴 产品版本号（对外：页脚展示 + 更新 UI）。语义化：修 bug 升末位（v1.0.1）、
 //    加功能升中位（v1.1.0）、数据结构不兼容升首位（v2.0.0）。首个公开发布 = v1.0.0。
 //    注意：内部还有一套「方案文档版本号」（如 V11.10），只用于设计记录，不对外，见 tabs/data.js 的 PLAN_VER。
-const APP_VER = 'v1.6.2';
+const APP_VER = 'v1.6.3';
 // 🔴 部署网址锚点（换网址风险防护，§13.7.1）：留空 = 首次启动自动记录当前 origin 并比对；
 //    上线固定域名后建议填死，例如 'https://banzhuren.example.com'，网址变化即弹告警提醒导入备份。
 const EXPECTED_ORIGIN = '';
@@ -54,18 +54,6 @@ function shell() {
     <div class="scroll" id="scroll"></div>
     <div class="footer" id="footer">
       <span class="ver">版本 ${esc(APP_VER)}</span>
-      <button id="dt-check-update">🔄 检查更新<span class="dot"></span></button>
-    </div>
-    <div class="update-mask" id="updateMask">
-      <div class="update-card">
-        <div class="ic">🔄</div>
-        <h3>发现新版本</h3>
-        <p>点「立即更新」会先保存草稿再重启，不会丢正在写的内容。</p>
-        <div class="row">
-          <button class="btn ghost" id="um-later">稍后</button>
-          <button class="btn" id="um-now">立即更新</button>
-        </div>
-      </div>
     </div>
     <div class="tabbar" id="tabbar">
       ${TABS.map(t => `<button class="tab" data-tab="${t.key}"><span class="ic">${t.ic}</span>${t.label}</button>`).join('')}
@@ -78,11 +66,6 @@ function shell() {
   const avatarBtn = app.querySelector('#sem-avatar');
   avatarBtn.onclick = toggleSemPop;
   avatarBtn.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSemPop(); } };
-  app.querySelector('#dt-check-update').onclick = checkForUpdate;
-  const um = app.querySelector('#updateMask');
-  um.querySelector('#um-later').onclick = () => um.classList.remove('show');
-  um.querySelector('#um-now').onclick = applyUpdate;
-
   onChange(() => {                       // 学期 / 设置变更后刷新
     const n = document.getElementById('sem-name');
     if (n) n.textContent = state.semester?.name || '';
@@ -282,55 +265,17 @@ async function maybeOnboard() {
   await s3.done;
 }
 
-/* ---------- 更新提示 UI（§4.3）：prompt 语义，新 SW 等用户点「立即更新」才接管 ---------- */
-let swReg = null;
-let waitingSw = null;        // 已安装、等待激活的新 SW
-
-function markUpdate() {       // 页脚「检查更新」变橙 + 小圆点
-  const btn = document.getElementById('dt-check-update');
-  if (btn) btn.classList.add('has-update');
-}
-function showUpdateMask() {
-  const m = document.getElementById('updateMask');
-  if (m) m.classList.add('show');
-}
+/* ---------- Service Worker 注册（离线能力 + 新 SW 接管后自动重载） ---------- */
+// 🔴 更新入口已整合到「设置 → 刷新到最新版」：这里只负责注册与「新 SW 接管即重载」
 async function setupUpdate() {
   if (!('serviceWorker' in navigator)) return;
   try {
     // 🔴 updateViaCache:'none' —— 向浏览器明确：检查 SW 更新时永不走 HTTP 缓存。
     // （现代浏览器默认已是这个语义，显式声明可挡掉「服务器给了长 max-age 就检查不到新版本」）
-    swReg = await navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' });
+    await navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' });
   } catch { return; }
-  if (swReg.waiting) { waitingSw = swReg.waiting; markUpdate(); }
-  swReg.addEventListener('updatefound', () => {
-    const installing = swReg.installing;
-    if (!installing) return;
-    installing.addEventListener('statechange', () => {
-      // 新 SW 装好且当前已有旧 controller → 进入 waiting，标橙点（不自动刷新）
-      if (installing.state === 'installed' && navigator.serviceWorker.controller) {
-        waitingSw = installing; markUpdate();
-      }
-    });
-  });
   // 新 SW 接管后强制重载，拿到最新代码
   navigator.serviceWorker.addEventListener('controllerchange', () => { window.location.reload(); });
-}
-async function checkForUpdate() {
-  // 🔴 P1-9：没有 SW 时不能说"已是最新版本"——那与真实能力不符（老浏览器 / 注册失败 / 非安全上下文）
-  if (!('serviceWorker' in navigator)) { toast('当前浏览器不支持自动更新，请用 Chrome / Edge / Safari 打开'); return; }
-  if (!swReg) { toast('离线更新暂不可用，刷新页面即可获取最新版'); return; }
-  try { await swReg.update(); } catch {}
-  if (swReg.waiting) { waitingSw = swReg.waiting; showUpdateMask(); }
-  else if (navigator.serviceWorker.controller) toast('已是最新版本');
-  else toast('正在初始化更新…');
-}
-async function applyUpdate() {
-  flushDraft();                                   // 🔴 先 flush 未保存草稿，避免录入中途被刷新丢字
-  const m = document.getElementById('updateMask'); if (m) m.classList.remove('show');
-  const target = waitingSw || (swReg && swReg.waiting);
-  if (target) target.postMessage({ type: 'SKIP_WAITING' });
-  // controllerchange 会触发 reload；兜底：无 controllerchange 时也 reload
-  setTimeout(() => { if (navigator.serviceWorker.controller) window.location.reload(); }, 1000);
 }
 
 /* ---------- 启动失败兜底页（绝不清空数据） ---------- */
@@ -399,7 +344,7 @@ async function boot() {
     await loadSettings();
     shell();
     document.getElementById('sem-name').textContent = sem.name;
-    // 🔴 SW 注册放在首次向导之前：老师首装时若中途关掉向导，也照样拿到离线能力与「检查更新」
+    // 🔴 SW 注册放在首次向导之前：老师首装时若中途关掉向导，也照样拿到离线能力
     setupUpdate();
     // 🔴 换网址风险告警（§13.7.1 / §4.3）：记录首次 origin，网址一旦变化即提醒导入备份
     try {
@@ -442,8 +387,6 @@ async function boot() {
     renderBootError(app, e);
     return;
   }
-  // 🔴 预览参数：?newversion=1 强制弹出更新窗，便于本地验证更新 UI（§4.3）
-  if (new URLSearchParams(location.search).get('newversion') === '1') showUpdateMask();
 }
 
 boot();

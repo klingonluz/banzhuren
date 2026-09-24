@@ -20,21 +20,23 @@ import { buildArchiveHTML, archiveFileName, fmtBytes } from '../archive.js';
 import { seedBaseline, WUYU, GUANZHU, CATEGORIES_SEED, TAGS_SEED } from '../db/seed.js';
 import { esc, toast, openPicker, emptyState, confirm, syncSeg, onSeg, banner, closeBanner, showSheet, filterStudents } from '../ui.js';
 import { download, blobToDataURL } from '../util.js';
+import { flushDraft } from './record.js';
 
 const SCHEMA_VERSION = 7;                 // 当前 schema 版本（V11.13：templates 移除 / images 去 del / 记录增复合索引）
-const APP_VER = 'v1.6.2';                 // 🔴 产品版本号（对外）：语义化递增，与 main.js 的 APP_VER 保持一致
+const APP_VER = 'v1.6.3';                 // 🔴 产品版本号（对外）：语义化递增，与 main.js 的 APP_VER 保持一致
 const PLAN_VER = 'V11.13';                // 🔴 方案版本号（内部，仅设置页可见）：与 dev/docs 里配对的方案文件同步，改功能才顺延
 
 // 🔴 存储口径三处统一：一个函数、不写死（§4.8.18 ①-4）
 async function storageBreakdown() {
   const db = state.db;
   const recN = await countActiveRecords(db);
-  const imgs = await listImages(db);
+  // 🔴 只用图片**数量**：绝不用 listImages()（那是 db.images.toArray()，会把全部照片 Blob 读进内存）
+  const imgN = await db.images.count();
   const rec = +(recN * 0.03).toFixed(2);
-  const img = +(imgs.length * 0.4).toFixed(2);
+  const img = +(imgN * 0.4).toFixed(2);
   const oth = 1.2;
   const total = +(rec + img + oth).toFixed(2);
-  return { recN, imgN: imgs.length, rec, img, oth, total };
+  return { recN, imgN, rec, img, oth, total };
 }
 function fmtMB(n) { return n >= 1 ? n.toFixed(1) + 'MB' : Math.round(n * 1024) + 'KB'; }
 
@@ -1192,6 +1194,7 @@ export async function openSettings() {
   // 最后 reload。只动 Cache Storage 与 SW 注册，绝不碰 IndexedDB（业务数据）。
   // 注意：旧实现发的是裸字符串 'skip'，而 sw.js 只认对象型 SKIP_WAITING 消息 → 指令空转，已修正。
   p.body.querySelector('#st-clear').onclick = async () => {
+    flushDraft();                                  // 🔴 刷新会 reload，先确保正在写的内容落 localStorage
     toast('正在刷新到最新版…');
     try {
       if ('caches' in window) { const ks = await caches.keys(); for (const k of ks) await caches.delete(k); }

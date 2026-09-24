@@ -4,14 +4,13 @@
 import { state } from '../state.js';
 import { listStudents, listCollections, putCollection, deleteCollection, getSchedule, saveSchedule } from '../db/semester.js';
 import { esc, toast, openPicker, emptyState, confirm, onSeg, filterStudents } from '../ui.js';
+import { pad } from '../util.js';
 
 const DAYS = ['周一', '周二', '周三', '周四', '周五'];
 const SUBJECTS = ['语文', '数学', '英语', '科学', '体育', '音乐', '美术', '信息', '劳技', '阅读', '班会', '自习', ''];
 
 let schedMode = 'class';      // class | mine
 let season = 'summer';        // summer | winter
-
-const pad = n => String(n).padStart(2, '0');
 function todayInfo() {
   const d = new Date();
   const wd = d.getDay();                 // 0=周日

@@ -304,27 +304,12 @@ textarea{width:100%;border:1px solid var(--line);border-radius:var(--r-s);paddin
 .tab .ic{font-size:20px;line-height:1}
 .tab.on{color:var(--primary);font-weight:600}
 
-/* 🔴 页脚（tabbar 上方）：版本号 + 检查更新（§4.3） */
+/* 🔴 页脚（tabbar 上方）：只显示版本号（更新入口已整合到「设置 → 刷新到最新版」） */
 .footer{position:absolute;left:0;right:0;bottom:calc(var(--tab-h) + env(safe-area-inset-bottom));
   height:34px;background:var(--surface);border-top:1px solid var(--line);
-  display:flex;align-items:center;justify-content:space-between;padding:0 14px;
+  display:flex;align-items:center;padding:0 14px;
   font-size:12px;color:var(--txt2);z-index:25}
 .footer .ver{font-weight:600;color:var(--txt2)}
-.footer #dt-check-update{position:relative;border:none;background:transparent;color:var(--primary-d);
-  font-size:12px;cursor:pointer;display:flex;align-items:center;gap:5px;padding:4px 2px}
-.footer #dt-check-update.has-update{color:var(--warn);font-weight:700}
-.footer #dt-check-update .dot{width:7px;height:7px;border-radius:50%;background:var(--warn);display:none}
-.footer #dt-check-update.has-update .dot{display:inline-block}
-
-/* 🔴 更新弹窗（居中，§4.3） */
-.update-mask{position:absolute;inset:0;background:rgba(0,0,0,.45);z-index:90;display:none;align-items:center;justify-content:center}
-.update-mask.show{display:flex;animation:fade .2s ease}
-.update-card{background:#fff;border-radius:16px;width:288px;max-width:84vw;padding:22px 20px;text-align:center;box-shadow:0 12px 40px rgba(0,0,0,.25)}
-.update-card .ic{font-size:34px;line-height:1}
-.update-card h3{margin:10px 0 4px;font-size:17px}
-.update-card p{margin:0 0 16px;color:var(--txt2);font-size:13px;line-height:1.6}
-.update-card .row{display:flex;gap:10px}
-.update-card .btn{flex:1}
 
 /* 弹层：底部 sheet + 全屏 picker（一律绝对定位于手机框内） */
 .mask{position:absolute;inset:0;background:rgba(0,0,0,.4);z-index:60;display:none;align-items:flex-end;justify-content:center}
