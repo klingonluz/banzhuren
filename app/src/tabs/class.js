@@ -619,10 +619,17 @@ function openRoll(coll, db, rerender) {
   listStudents(db).then(ss => { students.push(...ss); draw(); });
 
   const draw = () => {
-    let list = filterStudents(students, p.body.querySelector('#rl-q').value);
-    if (filter === 'no') list = list.filter(s => !paid.has(s.id));
-    if (filter === 'yes') list = list.filter(s => paid.has(s.id));
-    list.sort((a, b) => (paid.has(a.id) ? 1 : 0) - (paid.has(b.id) ? 1 : 0));
+    const q = p.body.querySelector('#rl-q').value;
+    let list;
+    if (filter === 'yes') {
+      // 🔴 已交：按点名先后排列（先点的在前），与手上那摞作业的顺序对得上，方便核对
+      const byId = new Map(students.map(s => [s.id, s]));
+      list = filterStudents([...paid].map(id => byId.get(id)).filter(Boolean), q);
+    } else {
+      // 🔴 全部 / 未交：保持名单原顺序，点完一个下一个不跳位（手指不用追着按钮跑）
+      list = filterStudents(students, q);
+      if (filter === 'no') list = list.filter(s => !paid.has(s.id));
+    }
     // 🔴 只数在册学生（已转出的不参与点名统计）
     const done = students.filter(s => paid.has(s.id)).length;
     p.body.querySelector('#rl-stat').textContent = `已交 ${done} / ${students.length}　未交 ${students.length - done}`;
