@@ -23,7 +23,7 @@ import { download, blobToDataURL } from '../util.js';
 import { flushDraft } from './record.js';
 
 const SCHEMA_VERSION = 7;                 // 当前 schema 版本（V11.13：templates 移除 / images 去 del / 记录增复合索引）
-const APP_VER = 'v1.6.3';                 // 🔴 产品版本号（对外）：语义化递增，与 main.js 的 APP_VER 保持一致
+const APP_VER = 'v1.6.4';                 // 🔴 产品版本号（对外）：语义化递增，与 main.js 的 APP_VER 保持一致
 const PLAN_VER = 'V11.13';                // 🔴 方案版本号（内部，仅设置页可见）：与 dev/docs 里配对的方案文件同步，改功能才顺延
 
 // 🔴 存储口径三处统一：一个函数、不写死（§4.8.18 ①-4）
