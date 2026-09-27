@@ -24,6 +24,20 @@ function weekNo() {
   return Math.max(1, Math.floor(diff / 7) + 1);
 }
 function periodTime(p) { return season === 'summer' ? (p.summer || '') : (p.winter || p.summer || ''); }
+// 🔴 时间拆成「开始 / 结束」两列渲染，别再拼成一个 `07:30-08:10` 字符串。
+//    原因：真机（Android + 中文系统字体）的数字是**不等宽**的，`11:00-11:40`（四个 1）比
+//    `08:40-09:20` 窄 10~14px，整串左对齐时右边缘参差、整列看着「歪歪扭扭」。
+//    拆成两个定宽右对齐的短列后边缘齐平，**不必**再给整列套等宽字体（等宽字形和界面不搭）。
+//    不是标准 HH:MM-HH:MM（老数据手输过自由文本）就退化成单列原文。
+function timeParts(t) {
+  const m = /^(\d{1,2}:\d{2})\s*[-–—~～至]\s*(\d{1,2}:\d{2})$/.exec((t || '').trim());
+  return m ? [m[1], m[2]] : [(t || '').trim(), ''];
+}
+function timeCellHTML(t) {
+  const [a, b] = timeParts(t);
+  if (!b) return `<div class="sch-t"><span class="sch-tc sch-tw">${esc(a) || '—'}</span></div>`;
+  return `<div class="sch-t"><span class="sch-tc">${esc(a)}</span><i class="sch-td">–</i><span class="sch-tc">${esc(b)}</span></div>`;
+}
 function inPeriod(p) {
   const t = periodTime(p);
   const m = /^(\d{2}):(\d{2})-(\d{2}):(\d{2})$/.exec(t || '');
@@ -140,7 +154,7 @@ function todayListHTML(sched) {
       if (!cell || !cell.subject) return '';
       return `<div class="sch-row ${now ? 'now' : ''}">
         <div class="sch-p ${b.cls} ${now ? 'now' : ''}">${esc(b.txt)}</div>
-        <div class="sch-t">${esc(periodTime(p))}</div>
+        ${timeCellHTML(periodTime(p))}
         <div class="sch-s">${esc(cell.subject)}${cell.cls ? `<span class="sch-cls">${esc(cell.cls)}</span>` : ''}</div>
         <span class="sch-mine">我的课</span>
       </div>`;
@@ -160,7 +174,7 @@ function todayListHTML(sched) {
     }
     return `<div class="sch-row ${now ? 'now' : ''}">
       <div class="sch-p ${b.cls} ${now ? 'now' : ''}">${esc(b.txt)}</div>
-      <div class="sch-t">${esc(periodTime(p))}</div>
+      ${timeCellHTML(periodTime(p))}
       <div class="sch-s">${esc(main)}${tchr ? `<span class="sch-cls">${esc(tchr)}</span>` : ''}</div>
     </div>`;
   }).join('');

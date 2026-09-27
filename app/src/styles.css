@@ -118,10 +118,13 @@ textarea{width:100%;border:1px solid var(--line);border-radius:var(--r-s);paddin
   border:1px solid transparent;display:inline-block}
 .chip.on{background:var(--primary);color:#fff}
 .chip.del{background:var(--danger-bg);color:var(--danger)}
-/* 自定义科目 chip：带 × 可删（预设科目没有 ×）。点 chip 本体=选中，点 ×=删 */
-.chip.cst{display:inline-flex;align-items:center;gap:2px;padding-right:6px}
-.chip .cx{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;
-  font-style:normal;font-size:13px;line-height:1;opacity:.5;margin-left:2px}
+/* 自定义科目 / 教师 chip：带 × 可删（预设科目没有 ×）。点 chip 本体=选中，点 ×=删。
+   🔴 × 必须和名字**拉开距离**，并给 chip 一个**下限宽度**：
+   只输一个姓（如「王」）时 chip 会很窄，× 紧贴文字 ⇒ 手指很容易误踩成删除。
+   space-between + min-width 让名字靠左、× 靠右，中间自动留出安全距离。 */
+.chip.cst{display:inline-flex;align-items:center;justify-content:space-between;gap:8px;padding-right:9px;min-width:72px}
+.chip .cx{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;flex:none;
+  font-style:normal;font-size:13px;line-height:1;opacity:.5}
 .chip .cx:hover,.chip .cx:active{opacity:1;background:rgba(0,0,0,.12)}
 .chip.on .cx{opacity:.8}
 .chip.on .cx:hover{background:rgba(255,255,255,.28)}
@@ -245,13 +248,26 @@ textarea{width:100%;border:1px solid var(--line);border-radius:var(--r-s);paddin
 .sch-p.sv{background:#e8eef8;color:#3f6fb5;font-size:11px}
 .sch-p.tu{background:#fdf3e3;color:#b7791f;font-size:11px}
 .sch-p.now{background:var(--primary);color:#fff}
-/* 🔴 时间列必须用**等宽字体**：手机字体（CJK 字体自带拉丁）的数字是**不等宽**的，
-   "11:00-11:40" 比 "08:40-09:20" 窄 30px 左右 ⇒ 右边缘参差、整列看着「歪歪扭扭」。
-   等宽后每行宽度完全一致：左右边缘齐平、冒号与连字符都在同一条竖线上。
-   别图省事改回普通字体，否则参差复现（真机才看得出来，桌面 Chromium 数字本来就等宽）。 */
-.sch-t{font-size:12px;color:var(--txt3);width:92px;flex:none;letter-spacing:0;
-  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
-  font-variant-numeric:tabular-nums}
+/* 🔴 时间列拆成「开始 / 结束」两个**定宽右对齐**的短列（对应 timeCellHTML）。
+   起因：手机字体（CJK 自带拉丁）的数字**不等宽**，"11:00-11:40"（四个 1）比
+   "08:40-09:20" 窄 10~14px ⇒ 整串左对齐时右边缘参差、整列看着「歪歪扭扭」。
+   上一版用等宽字体压平，边缘是齐了但**字形和界面不搭**（用户明确否掉）。
+   现在每列只有 5 个字符 + 定宽 ⇒ 两列边缘各自齐平，参差基本看不出，
+   且字体回归系统默认。⚠️ 别再合并回一个字符串，也别给整列套等宽的 monospace 字体族。 */
+.sch-t{font-size:12px;color:var(--txt3);flex:none;display:flex;align-items:center;gap:2px;
+  min-width:82px;letter-spacing:0;font-variant-numeric:tabular-nums}
+/* 每列定宽 34px ≈ 时间文字实测 31px + 3px 余量（防系统字号放大时溢出）。
+   🔴 两列**必须一左一右**对齐，别都写 right：
+     都 right ⇒ 左列右侧无留白、右列左侧留 8px ⇒ 中间那个 – 明显偏左（用户截图 `18:50–  18:55`）。
+     改成「左列 left + 右列 right」后 – 两侧等距（左列右侧同样让出留白），
+     而右列右对齐使**右边缘依旧齐平** —— 居中与对齐两个诉求同时成立。
+   🔴 别把定宽值放大回去（曾写成 40px）：白留 9px + gap 2px ⇒ – 两侧各 11px，
+     看着「分得太开、不和谐」（用户原话）。34px 时 – 两侧各 5px，紧凑且仍对称。 */
+.sch-t .sch-tc{display:inline-block;min-width:34px}
+.sch-t .sch-tc:first-child:not(.sch-tw){text-align:left}
+.sch-t .sch-tc:last-child:not(.sch-tw){text-align:right}
+.sch-t .sch-tw{min-width:0;text-align:left;white-space:nowrap}   /* 老数据非标准写法：单列原文 */
+.sch-t .sch-td{font-style:normal;opacity:.55}
 .sch-s{font-size:15px;font-weight:600}
 .sch-mine{font-size:11px;color:var(--warn);background:var(--warn-bg);padding:2px 8px;border-radius:10px;margin-left:auto}
 .sch-row.now{background:var(--primary-bg);margin:0 -6px;padding-left:6px;padding-right:6px;border-radius:8px}
