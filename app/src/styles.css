@@ -118,6 +118,13 @@ textarea{width:100%;border:1px solid var(--line);border-radius:var(--r-s);paddin
   border:1px solid transparent;display:inline-block}
 .chip.on{background:var(--primary);color:#fff}
 .chip.del{background:var(--danger-bg);color:var(--danger)}
+/* 自定义科目 chip：带 × 可删（预设科目没有 ×）。点 chip 本体=选中，点 ×=删 */
+.chip.cst{display:inline-flex;align-items:center;gap:2px;padding-right:6px}
+.chip .cx{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;
+  font-style:normal;font-size:13px;line-height:1;opacity:.5;margin-left:2px}
+.chip .cx:hover,.chip .cx:active{opacity:1;background:rgba(0,0,0,.12)}
+.chip.on .cx{opacity:.8}
+.chip.on .cx:hover{background:rgba(255,255,255,.28)}
 /* 关注分类 chip：醒目红，区分正向能力（绿） */
 .chip.gz{background:var(--danger-bg);color:var(--danger);border-color:#f3c6c6}
 .chip.gz.on{background:var(--danger);color:#fff}
@@ -238,7 +245,13 @@ textarea{width:100%;border:1px solid var(--line);border-radius:var(--r-s);paddin
 .sch-p.sv{background:#e8eef8;color:#3f6fb5;font-size:11px}
 .sch-p.tu{background:#fdf3e3;color:#b7791f;font-size:11px}
 .sch-p.now{background:var(--primary);color:#fff}
-.sch-t{font-size:12px;color:var(--txt3);width:92px;flex:none}
+/* 🔴 时间列必须用**等宽字体**：手机字体（CJK 字体自带拉丁）的数字是**不等宽**的，
+   "11:00-11:40" 比 "08:40-09:20" 窄 30px 左右 ⇒ 右边缘参差、整列看着「歪歪扭扭」。
+   等宽后每行宽度完全一致：左右边缘齐平、冒号与连字符都在同一条竖线上。
+   别图省事改回普通字体，否则参差复现（真机才看得出来，桌面 Chromium 数字本来就等宽）。 */
+.sch-t{font-size:12px;color:var(--txt3);width:92px;flex:none;letter-spacing:0;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  font-variant-numeric:tabular-nums}
 .sch-s{font-size:15px;font-weight:600}
 .sch-mine{font-size:11px;color:var(--warn);background:var(--warn-bg);padding:2px 8px;border-radius:10px;margin-left:auto}
 .sch-row.now{background:var(--primary-bg);margin:0 -6px;padding-left:6px;padding-right:6px;border-radius:8px}
@@ -279,11 +292,13 @@ textarea{width:100%;border:1px solid var(--line);border-radius:var(--r-s);paddin
 .sec-hd{font-size:13px;font-weight:700;color:var(--primary-d);margin:4px 0 6px}
 .trow{display:flex;align-items:center;gap:6px;padding:8px 0;border-top:1px solid var(--line)}
 .trow .tnm{width:66px;flex:none;font-size:13px}
-/* 🔴 作息时间：两个 type="time" 选择器并排（替换原来的手打文本框） */
-.trow .tpick{flex:1;display:flex;align-items:center;gap:6px;min-width:0}
+/* 🔴 作息时间：两个 type="time" 选择器**并排一行**（用户手机实测正常，不要再改成上下排）。
+   曾经在旧缓存下换行过，那是缓存里的旧 CSS，刷新到最新版即恢复 ⇒ 别靠改布局去治。 */
+.trow .tpick{flex:1;display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:nowrap}
 .trow .tdash{flex:none;font-size:12px;color:var(--txt3)}
 .trow .ti{flex:1;min-width:0;border:1px solid var(--line);border-radius:6px;
-  padding:6px 4px;font:inherit;font-size:13px;text-align:center;background:#fff;color:var(--txt1)}
+  padding:6px 4px;font:inherit;font-size:13px;text-align:center;background:#fff;color:var(--txt1);
+  font-variant-numeric:tabular-nums}
 .trow .ti:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-bg)}
 
 /* 收缴 */

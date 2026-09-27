@@ -110,6 +110,12 @@ function normalizeSched(sched, semester) {
   if (!Array.isArray(sched.customSubjects)) sched.customSubjects = [];
   // 🔴 自定义教师名单（本班老师）：与 customSubjects 同款「就地累积」，无 schema 变更
   if (!Array.isArray(sched.customTeachers)) sched.customTeachers = [];
+  // 🔴 自愈：清掉与**预设科目重名**的自定义项。
+  //    场景：老师早先在「预设还没有劳动/班会」时手动加了「劳动」「班会」，
+  //    后来预设补上了，chips 里就出现两个一模一样的（用户实际踩到）。
+  //    这里在每次 normalize 时静默去重，老用户一升级就恢复正常，不用手动删。
+  sched.customSubjects = [...new Set(sched.customSubjects.map(s => String(s || '').trim()).filter(Boolean))]
+    .filter(s => !SUBJECTS.includes(s));
   delete sched.classes;
   delete sched.weekly;
   delete sched.mineSubject;
@@ -188,15 +194,32 @@ function scheduleCard(sched) {
 
 /* ---- 科目 chips：两处（周课表单选 / 我的课表「科目+班级」）共用，避免副本各改一半（P2-4） ---- */
 // 选中态由调用方通过 cur 传入；末尾两项是「＋ 自定义科目」「（清空）」
+// 🔴 自定义项（不在预设 SUBJECTS 里的）带一个 `×` 角标，点它即从 customSubjects 删除（见 bindChipDelete）。
 function subjectChipsHTML(all, cur) {
-  return all.map(s => `<span class="chip ${s === cur ? 'on' : ''}" data-s="${esc(s)}">${esc(s)}</span>`).join('')
+  return all.map(s => {
+    const isCustom = !SUBJECTS.includes(s);
+    return isCustom
+      ? `<span class="chip cst ${s === cur ? 'on' : ''}" data-s="${esc(s)}">${esc(s)}<i class="cx" data-sdel="${esc(s)}" title="删除这个自定义科目">×</i></span>`
+      : `<span class="chip ${s === cur ? 'on' : ''}" data-s="${esc(s)}">${esc(s)}</span>`;
+  }).join('')
     + '<span class="chip" data-custom="1">＋ 自定义科目</span><span class="chip" data-s="">（清空）</span>';
+}
+// 点自定义项上的 `×` = 从名单移除（并同步落库）。返回 true 表示本次点击是「删除」。
+function bindChipDelete(e, sched, save, after) {
+  const x = e.target.closest('[data-sdel]');
+  if (!x) return false;
+  e.stopPropagation();
+  const nm = x.dataset.sdel;
+  sched.customSubjects = (sched.customSubjects || []).filter(s => s !== nm);
+  if (save) save();
+  if (after) after(nm);
+  return true;
 }
 // 弹窗里问一个自定义科目名并落进 sched.customSubjects（已存在则不重复加）；返回新名字或 ''
 function addCustomSubject(sched, save, name) {
   const nm = (name || '').trim();
   if (!nm) return '';
-  if (!(sched.customSubjects || []).includes(nm)) {
+  if (!(sched.customSubjects || []).includes(nm) && !SUBJECTS.includes(nm)) {
     sched.customSubjects = [...(sched.customSubjects || []), nm];
     if (save) save();
   }
@@ -233,15 +256,16 @@ function cellPicker({ subjectWanted, curSubject, curTeacher, sched, save, onOk }
   let subject = curSubject || '';
   let teacher = curTeacher || '';
   const tchBox = p.body.querySelector('#cp-tch');
-  const subBox = p.body.querySelector('#cp-subs');
+  let subBox = p.body.querySelector('#cp-subs');   // let：删自定义科目后整块重画
   const subAdd = p.body.querySelector('#cp-subadd');
   const tchAdd = p.body.querySelector('#cp-tchadd');
   // 教师 chips：本班老师（自定义累积）+「＋ 添加教师」+「（不填）」
   // 🔴 若本格已填的教师不在名单里（历史数据/手输过），也一并列出来，避免「明明有值却选不中」
+  // 🔴 名单里的教师都带 × 可删（全是老师自己加的，没有「预设」一说）
   const redrawTch = () => {
     const list = [...(sched.customTeachers || [])];
     if (teacher && !list.includes(teacher)) list.push(teacher);
-    tchBox.innerHTML = list.map(t => `<span class="chip ${t === teacher ? 'on' : ''}" data-t="${esc(t)}">${esc(t)}</span>`).join('')
+    tchBox.innerHTML = list.map(t => `<span class="chip cst ${t === teacher ? 'on' : ''}" data-t="${esc(t)}">${esc(t)}<i class="cx" data-tdel="${esc(t)}" title="删除这个教师">×</i></span>`).join('')
       + '<span class="chip" data-tadd="1">＋ 添加教师</span>'
       + `<span class="chip ${teacher ? '' : 'on'}" data-t="">（不填）</span>`;
   };
@@ -253,27 +277,45 @@ function cellPicker({ subjectWanted, curSubject, curTeacher, sched, save, onOk }
     wrap.hidden = !willOpen;
     if (willOpen) setTimeout(() => inp.focus(), 0);
   };
-  if (subBox) subBox.onclick = e => {
+  // 科目区整体重画（删掉一个自定义科目后调用），顺带重绑点击
+  const drawSubs = () => {
+    subBox.outerHTML = `<div class="chips" id="cp-subs">${subjectChipsHTML(allSubjects(sched), subject)}</div>`;
+    subBox = p.body.querySelector('#cp-subs');
+    subBox.onclick = onSubClick;
+  };
+  const onSubClick = e => {
+    // 🔴 先判「删自定义科目」：点 × 只删，不改选中
+    if (bindChipDelete(e, sched, save, nm => { if (subject === nm) subject = ''; drawSubs(); })) return;
     const cs = e.target.closest('[data-custom]');
     if (cs) { openAdd(subAdd, p.body.querySelector('#cp-subin'), tchAdd); return; }
     const c = e.target.closest('[data-s]');
     if (c) { subject = c.dataset.s; subBox.querySelectorAll('.chip').forEach(x => x.classList.toggle('on', x.dataset.s === subject)); }
   };
+  if (subBox) subBox.onclick = onSubClick;
   if (subAdd) {
     const inp = p.body.querySelector('#cp-subin');
     const commitSub = () => {
       const name = addCustomSubject(sched, save, inp.value);
       if (name) {
         subject = name; inp.value = ''; subAdd.hidden = true;
-        subBox.querySelectorAll('.chip').forEach(x => x.classList.remove('on'));
-        const sp = document.createElement('span'); sp.className = 'chip on'; sp.dataset.s = name; sp.textContent = name;
-        subBox.insertBefore(sp, subBox.querySelector('[data-custom]'));
+        drawSubs();                       // 整块重画：新增项自动带上 cst 类与 × 角标
       } else toast('请输入科目名称');
     };
     p.body.querySelector('#cp-subgo').onclick = commitSub;
     inp.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); commitSub(); } };
   }
   tchBox.onclick = e => {
+    // 🔴 点 × = 从教师名单移除（不改当前选中；若删的正是已选教师则清空）
+    const dx = e.target.closest('[data-tdel]');
+    if (dx) {
+      e.stopPropagation();
+      const nm = dx.dataset.tdel;
+      sched.customTeachers = (sched.customTeachers || []).filter(t => t !== nm);
+      save();
+      if (teacher === nm) teacher = '';
+      redrawTch();
+      return;
+    }
     const ta = e.target.closest('[data-tadd]');
     if (ta) { openAdd(tchAdd, p.body.querySelector('#cp-tchin'), subAdd); return; }
     const t = e.target.closest('[data-t]');
@@ -321,7 +363,7 @@ function openWeek(db, sched, rerender) {
       <div class="muted" style="margin:0 0 8px">正在编辑：<b>本班（${esc(sched.homeroom?.name || '本班')}）</b> 的周课表<span id="wk-parity-lb">${useSplit() ? ' · <b style="color:var(--primary)">' + (editParity === 'odd' ? '单周' : '双周') + '</b>' : ''}</span></div>
       ${useSplit() ? `<div class="seg" id="wk-parity" style="margin-bottom:8px"><button data-v="odd" class="${editParity === 'odd' ? 'on' : ''}">单周课表</button><button data-v="even" class="${editParity === 'even' ? 'on' : ''}">双周课表</button></div>` : ''}
       <div id="wk-table">${tableHTML()}</div>
-      <div class="save-note">点格子选科目 + 选教师（同一页面）；<b>辅导、大课间只填教师</b>；没有的科目 / 教师点「＋ 添加」。填了教师名，今日课表会一并显示。${useSplit() ? '单双周各一套，互不覆盖。' : ''}</div>
+      <div class="save-note">点格子选科目 + 选教师（同一页面）；<b>辅导、大课间只填教师</b>；没有的科目 / 教师点「＋ 添加」，自己加的可点名字后面的 <b>×</b> 删掉。填了教师名，今日课表会一并显示。${useSplit() ? '单双周各一套，互不覆盖。' : ''}</div>
     </div>`;
   const p = openPicker({ title: '周课表', body, foot: `<button class="btn ghost" data-pclose>关闭</button><button class="btn" id="wk-save">保存课表</button>` });
   const onCell = e => {
@@ -386,7 +428,7 @@ function openMineCell(cur, sched, onPick, save) {
   });
   let subject = cur?.subject || '';
   let cls = cur?.cls || '';
-  const subBox = p.body.querySelector('#mc-subs');
+  let subBox = p.body.querySelector('#mc-subs');   // let：删自定义科目后整块重画
   const clsBox = p.body.querySelector('#mc-cls');
   const subAdd = p.body.querySelector('#mc-subadd');
   const clsAdd = p.body.querySelector('#mc-clsadd');
@@ -402,20 +444,26 @@ function openMineCell(cur, sched, onPick, save) {
     wrap.hidden = !willOpen;
     if (willOpen) setTimeout(() => inp.focus(), 0);
   };
-  subBox.onclick = e => {
+  const drawSubs = () => {
+    subBox.outerHTML = `<div class="chips" id="mc-subs">${subjectChipsHTML(allSubjects(sched), subject)}</div>`;
+    subBox = p.body.querySelector('#mc-subs');
+    subBox.onclick = onSubClick;
+  };
+  const onSubClick = e => {
+    if (bindChipDelete(e, sched, save, nm => { if (subject === nm) subject = ''; drawSubs(); })) return;
     const cs = e.target.closest('[data-custom]');
     if (cs) { openAdd(subAdd, p.body.querySelector('#mc-subin'), clsAdd); return; }
     const c = e.target.closest('[data-s]');
     if (c) { subject = c.dataset.s; subBox.querySelectorAll('.chip').forEach(x => x.classList.toggle('on', x.dataset.s === subject)); }
   };
+  subBox.onclick = onSubClick;
   {
     const inp = p.body.querySelector('#mc-subin');
     const commit = () => {
       const nm = addCustomSubject(sched, save, inp.value);
       if (!nm) { toast('请输入科目名称'); return; }
       subject = nm; inp.value = ''; subAdd.hidden = true;
-      subBox.querySelectorAll('.chip').forEach(x => x.classList.remove('on'));
-      const sp = document.createElement('span'); sp.className = 'chip on'; sp.dataset.s = nm; sp.textContent = nm; subBox.appendChild(sp);
+      drawSubs();
     };
     p.body.querySelector('#mc-subgo').onclick = commit;
     inp.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); commit(); } };
