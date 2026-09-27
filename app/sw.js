@@ -2,7 +2,7 @@
 // 取数策略：cache-first（命中缓存立即返回，消除「加载中」白屏）。
 // 安全性由「每次发版 bump CACHE 桶号」保证：新桶 install 时 addAll 重新拉全量资源，
 // 旧桶在 activate 阶段被清掉，因此不会出现「旧 JS 永久缓存」问题。仅 2xx 响应写缓存。
-const CACHE = 'bzr-v44';
+const CACHE = 'bzr-v48';
 const ASSETS = [
   './', './index.html', './manifest.webmanifest', './favicon.svg', './recover.html',
   './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png',

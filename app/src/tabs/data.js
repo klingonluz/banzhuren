@@ -6,8 +6,7 @@ import {
   persistSupported, requestPersist, canInstall, promptInstall
 } from '../state.js';
 import {
-  listStudents, bulkPutStudents, listCategories, bulkPutCategories, addCategory, updateCategory,
-  listTags, bulkPutTags, addTag, updateTag, deleteTag,
+  listStudents, bulkPutStudents,
   getSchedule, listDeleted, restoreRecord, deleteSemester, openSemester, ensureOpen, countActiveRecords,
   putImage, listImages, deleteImage, dataURLToBlob, orphanImages
 } from '../db/semester.js';
@@ -17,13 +16,13 @@ import { openExport } from '../export.js';
 import { listSemesters, putSemester, ensureSemester, meta } from '../db/meta.js';
 import { listSnaps, getSnap, deleteSnap } from '../db/rescue.js';
 import { buildArchiveHTML, archiveFileName, fmtBytes } from '../archive.js';
-import { seedBaseline, WUYU, GUANZHU, CATEGORIES_SEED, TAGS_SEED } from '../db/seed.js';
+import { seedBaseline, WUYU, GUANZHU } from '../db/seed.js';
 import { esc, toast, openPicker, emptyState, confirm, syncSeg, onSeg, banner, closeBanner, showSheet, filterStudents } from '../ui.js';
 import { download, blobToDataURL } from '../util.js';
 import { flushDraft } from './record.js';
 
 const SCHEMA_VERSION = 7;                 // 当前 schema 版本（V11.13：templates 移除 / images 去 del / 记录增复合索引）
-const APP_VER = 'v1.6.4';                 // 🔴 产品版本号（对外）：语义化递增，与 main.js 的 APP_VER 保持一致
+const APP_VER = 'v1.7.0';                 // 🔴 产品版本号（对外）：语义化递增，与 main.js 的 APP_VER 保持一致
 const PLAN_VER = 'V11.13';                // 🔴 方案版本号（内部，仅设置页可见）：与 dev/docs 里配对的方案文件同步，改功能才顺延
 
 // 🔴 存储口径三处统一：一个函数、不写死（§4.8.18 ①-4）
@@ -184,8 +183,6 @@ export async function mount(scrollEl) {
   const render = () => mount(scrollEl);   // 备份 / 操作后置刷新
   const db = state.db;
   const students = await listStudents(db);
-  const tags = await listTags(db);
-  const cats = await listCategories(db);
   const deleted = await listDeleted(db);
   const sto = await storageBreakdown();
   const sems = await listSemesters();
@@ -193,7 +190,7 @@ export async function mount(scrollEl) {
   const archived = sems.filter(s => s.status === 'archived' || s.status === 'cleared');
 
   scrollEl.innerHTML = `
-    ${manageCard(students.length, cats.length, tags.length)}
+    ${manageCard(students.length)}
     ${semesterCard(sto)}
     ${backupCard()}
     ${textCard()}
@@ -244,15 +241,13 @@ export async function mount(scrollEl) {
 }
 
 /* ---------- 卡片 ---------- */
-function manageCard(stuN, catN, tagN) {
+function manageCard(stuN) {
   return `<div class="card">
-    <h2>👥 名单与标签 <span class="muted" style="font-weight:400;font-size:12px">管理端</span></h2>
+    <h2>👥 学生名单 <span class="muted" style="font-weight:400;font-size:12px">管理端</span></h2>
     <div class="stat-grid">
       <div class="stat"><b>${stuN}</b><span>在册学生</span></div>
-      <div class="stat"><b>${tagN}</b><span>标签总数</span></div>
-      <div class="stat"><b>${catN}</b><span>分类数</span></div>
     </div>
-    <button class="btn ghost mt" id="dt-manage">管理名单 / 分类 / 标签库</button>
+    <button class="btn ghost mt" id="dt-manage">管理学生名单</button>
     <div class="save-note">批量粘贴（每行一个）/ 手加 / 导入。<b>转出</b> = 学生离开本班：不再出现在选人、收缴、待办里，记录<b>全部保留</b>，可随时转回。</div>
   </div>`;
 }
@@ -317,27 +312,14 @@ function trashCard(n) {
   </div>`;
 }
 
-/* ---------- 管理端：名单 + 分类 + 标签库 ---------- */
+/* ---------- 管理端：学生名单（分类 / 标签为系统预设，不可修改，故无对应页签） ---------- */
 function openManage() {
-  let tab = 'stu';
   const p = openPicker({
-    title: '管理名单 / 分类 / 标签库',
-    body: `<div style="padding:12px 14px">
-      <div class="seg" id="mg-tab">
-        <button data-v="stu" class="on">学生名单</button><button data-v="cat">分类</button><button data-v="tag">标签库</button>
-      </div>
-      <div id="mg-box" style="margin-top:12px"></div>
-    </div>`,
+    title: '管理学生名单',
+    body: `<div style="padding:12px 14px"><div id="mg-box"></div></div>`,
     foot: `<button class="btn" data-pclose>关闭</button>`
   });
-  const draw = async () => {
-    const box = p.body.querySelector('#mg-box');
-    if (tab === 'stu') await drawStudents(box);
-    else if (tab === 'cat') await drawCats(box);
-    else await drawTags(box);
-  };
-  onSeg(p.body.querySelector('#mg-tab'), v => { tab = v; draw(); });
-  draw();
+  drawStudents(p.body.querySelector('#mg-box'));
 }
 
 async function drawStudents(box) {
@@ -441,140 +423,6 @@ async function drawStudents(box) {
   };
 }
 
-/* ---------- 分类管理（全部可编辑；关注不可删，可改名） ---------- */
-async function drawCats(box) {
-  const db = state.db;
-  let cats = await listCategories(db);
-  if (!cats.length) { cats = CATEGORIES_SEED.map(c => ({ ...c })); await bulkPutCategories(db, cats); }
-  cats.sort((a, b) => (a.order || 0) - (b.order || 0));
-  const tagCount = {};
-  (await listTags(db)).forEach(t => { tagCount[t.category] = (tagCount[t.category] || 0) + 1; });
-  box.innerHTML = `
-    <div class="row" style="gap:8px;margin-bottom:8px">
-      <input class="ta" id="cat-name" placeholder="新分类名" style="flex:1">
-      <select class="ta" id="cat-kind" style="width:96px">
-        <option value="ability">正向能力</option><option value="internal">关注（内部观察）</option>
-      </select>
-      <button class="btn tiny" id="cat-add">新建</button>
-    </div>
-    <div id="cat-list">${cats.map(c => `
-      <div class="li" data-id="${esc(c.id)}">
-        <div style="flex:1;min-width:0">
-          <div class="nm">${esc(c.cat)} ${c.kind === 'internal' ? '<span class="pill no">关注</span>' : ''}</div>
-          <div class="meta">${tagCount[c.cat] || 0} 个标签</div>
-        </div>
-        <button class="mini" data-rename="${esc(c.id)}">改名</button>
-        ${c.id === 'cat_gz' ? '<span class="muted" style="font-size:11px">受保护</span>' : `<button class="mini danger" data-delcat="${esc(c.id)}" data-cfm="0">删除</button>`}
-      </div>`).join('')}</div>
-    <div class="save-note">「关注」不可删（可改名）；其它分类可增删，删分类会一并移除其下标签。</div>`;
-
-  box.querySelector('#cat-add').onclick = async () => {
-    const name = box.querySelector('#cat-name').value.trim();
-    const kind = box.querySelector('#cat-kind').value;
-    if (!name) { toast('请填写分类名'); return; }
-    if (cats.some(c => c.cat === name)) { toast('已有同名分类'); return; }
-    const id = 'cat_' + Date.now().toString(36);
-    await addCategory(db, { id, cat: name, kind, order: cats.length, updatedAt: Date.now(), del: 0 });
-    toast('已新建分类'); drawCats(box);
-  };
-  box.querySelector('#cat-list').onclick = async e => {
-    const rn = e.target.closest('[data-rename]');
-    if (rn) {
-      const c = cats.find(x => x.id === rn.dataset.rename);
-      const nv = prompt('改为', c.cat);
-      if (nv && nv.trim()) { await updateCategory(db, c.id, { cat: nv.trim(), updatedAt: Date.now() }); toast('已更新'); drawCats(box); }
-      return;
-    }
-    const dl = e.target.closest('[data-delcat]');
-    if (dl) {
-      if (dl.dataset.cfm !== '1') { dl.dataset.cfm = '1'; dl.textContent = '确认删除?'; return; }
-      const c = cats.find(x => x.id === dl.dataset.delcat);
-      confirm({ title: '删除分类', msg: `将一并删除「${c.cat}」下所有标签（历史记录仍按名称保留）。`, danger: true, onOk: async () => {
-        await db.categories.update(c.id, { del: Date.now() });
-        const own = (await listTags(db)).filter(t => t.category === c.cat);
-        for (const t of own) await db.tags.update(t.id, { del: Date.now() });
-        toast('已删除分类及标签'); drawCats(box);
-      }});
-    }
-  };
-}
-
-/* ---------- 标签库（可增删改名 / 星标；关注类标签同样可删） ---------- */
-async function drawTags(box) {
-  const db = state.db;
-  let tags = await listTags(db);
-  if (!tags.length) { tags = TAGS_SEED.map(t => ({ ...t })); await bulkPutTags(db, tags); }
-  let cats = await listCategories(db);
-  if (!cats.length) { cats = CATEGORIES_SEED.map(c => ({ ...c })); await bulkPutCategories(db, cats); }
-  cats.sort((a, b) => (a.order || 0) - (b.order || 0));
-  const catOpts = cats.map(c => `<option value="${esc(c.cat)}">${esc(c.cat)}</option>`).join('');
-  tags.sort((a, b) => (b.starred ? 1 : 0) - (a.starred ? 1 : 0) || (b.useCount || 0) - (a.useCount || 0));
-  box.innerHTML = `
-    <div class="field"><label>分类</label>
-      <select class="ta" id="tg-cat" style="margin-bottom:8px">${catOpts}</select>
-      <div class="row" style="gap:8px">
-        <input class="ta" id="tg-name" placeholder="新标签名" style="flex:1">
-        <button class="btn tiny" id="tg-add">新建</button>
-      </div>
-    </div>
-    <div id="tg-list">${tags.map(t => `
-      <div class="li" data-id="${esc(t.id)}">
-        <div style="flex:1;min-width:0">
-          <div class="nm">${t.starred ? '★ ' : ''}${esc(t.name)}</div>
-          <div class="meta">${esc(t.category)} · 使用 ${t.useCount || 0} 次</div>
-          ${t.presetComment ? `<div class="cmt">预设评语：${esc(t.presetComment)}</div>` : ''}
-        </div>
-        <div style="display:flex;flex-direction:column;gap:6px;flex:none">
-          <button class="mini" data-editcmt="${esc(t.id)}">改评语</button>
-          <button class="mini" data-star="${esc(t.id)}">${t.starred ? '取消星标' : '星标'}</button>
-          <button class="mini danger" data-deltag="${esc(t.id)}" data-cfm="0">删除</button>
-        </div>
-      </div>`).join('')}</div>
-    <div class="save-note">删除标签后<b>历史记录仍显示原标签名</b>，同分类禁止同名。「改评语」改的是选标签时自动填入的预设评语。</div>`;
-
-  box.querySelector('#tg-add').onclick = async () => {
-    const name = box.querySelector('#tg-name').value.trim();
-    const cat = box.querySelector('#tg-cat').value;
-    if (!name) { toast('请填写标签名'); return; }
-    if (tags.some(t => t.name === name && t.category === cat)) { toast('同分类下已有同名标签'); return; }
-    await addTag(db, { id: 'tg' + Date.now().toString(36), name, category: cat, presetComment: '', starred: 0, useCount: 0, updatedAt: Date.now(), del: 0 });
-    toast('已新建'); drawTags(box);
-  };
-  box.querySelector('#tg-list').onclick = async e => {
-    const ec = e.target.closest('[data-editcmt]');
-    if (ec) { editPresetComment(tags.find(x => x.id === ec.dataset.editcmt)); return; }
-    const st = e.target.closest('[data-star]');
-    if (st) { const t = tags.find(x => x.id === st.dataset.star); await updateTag(db, t.id, { starred: t.starred ? 0 : 1, updatedAt: Date.now() }); drawTags(box); return; }
-    const dl = e.target.closest('[data-deltag]');
-    if (dl) {
-      if (dl.dataset.cfm !== '1') { dl.dataset.cfm = '1'; dl.textContent = '确认删除?'; return; }
-      await deleteTag(db, dl.dataset.deltag);
-      toast('已删除'); drawTags(box);
-    }
-  };
-}
-
-/* ---------- 编辑标签预设评语（选标签时自动填入的内容，可在标签库改） ---------- */
-function editPresetComment(t) {
-  if (!t) return;
-  const p = openPicker({
-    title: '改预设评语',
-    lead: `「${t.name}」被选中且开着“自动填预设评语”时会填入这段；留空则自动填一小句通用评语。`,
-    body: `<div style="padding:14px 16px">
-      <textarea class="ta" id="cmt-ta" rows="4" placeholder="如：能独立完成布置的任务，值得肯定。">${esc(t.presetComment || '')}</textarea>
-    </div>`,
-    foot: `<button class="btn ghost" data-pclose>取消</button><button class="btn" id="cmt-save">保存</button>`
-  });
-  p.foot.querySelector('#cmt-save').onclick = async () => {
-    const v = p.body.querySelector('#cmt-ta').value.trim();
-    await updateTag(state.db, t.id, { presetComment: v, updatedAt: Date.now() });
-    toast('预设评语已更新'); p.close();
-    // 重绘标签库列表（若仍在管理弹层内）
-    const box = document.querySelector('#mg-box');
-    if (box) drawTags(box);
-  };
-}
-
 /* ---------- 学期管理 ---------- */
 export function openSemesters() {
   const p = openPicker({
@@ -615,12 +463,8 @@ export function openSemesters() {
     const from = openSemester(state.currentSemesterId);
     try {
       const stu = (await from.students.toArray()).filter(s => !s.out).map(s => ({ ...s, id: 's' + Math.random().toString(36).slice(2, 9), pinyin: s.pyManual ? s.pinyin : nameInitials(s.name) }));
-      const tg = await from.tags.toArray();
-      const cats = await from.categories.toArray();
       const to = openSemester(ns.id);
       await bulkPutStudents(to, stu);
-      await bulkPutTags(to, tg.length ? tg : TAGS_SEED);
-      await bulkPutCategories(to, cats.length ? cats : CATEGORIES_SEED);
     } catch {}
     sems.forEach(s => { if (s.status === 'active') putSemester({ ...s, status: 'inactive' }); });
     await switchSemester(ns); p.close();
@@ -1004,10 +848,6 @@ export async function openSettings() {
         <div class="seg sm hscroll" id="st-dcat">${WUYU.map(w => `<button data-v="${esc(w)}">${esc(w)}</button>`).join('')}</div>
       </div>
       <div class="set-item">
-        <div class="si-lb"><span>选标签自动填预设评语</span><em>默认关，避免重复臃肿</em></div>
-        <div class="seg sm" id="st-auto"><button data-v="0" class="on">关</button><button data-v="1">开</button></div>
-      </div>
-      <div class="set-item">
         <div class="si-lb"><span>保存后行为</span><em>连续记同一人更快</em></div>
         <div class="seg" id="st-after"><button data-v="keep">保留当前学生</button><button data-v="clear">完全清空</button></div>
       </div>
@@ -1092,7 +932,6 @@ export async function openSettings() {
 
   syncSeg(p.body.querySelector('#st-fs'), S.fontSize || 'std');
   syncSeg(p.body.querySelector('#st-dcat'), S.defaultCat || WUYU[0]);
-  syncSeg(p.body.querySelector('#st-auto'), String(S.autoComment ? 1 : 0));
   syncSeg(p.body.querySelector('#st-after'), S.afterSave || 'keep');
   syncSeg(p.body.querySelector('#st-tlmode'), S.tlMode || 'card');
   syncSeg(p.body.querySelector('#st-tlpage'), String(S.tlPage || 20));
@@ -1117,7 +956,6 @@ export async function openSettings() {
     p.body.querySelector('#st-fs-hint').textContent = fsHint[v];
   });
   onSeg(p.body.querySelector('#st-dcat'), v => { saveSetting('defaultCat', v); });
-  onSeg(p.body.querySelector('#st-auto'), v => { saveSetting('autoComment', v === '1'); });
   onSeg(p.body.querySelector('#st-after'), v => { saveSetting('afterSave', v); });
   onSeg(p.body.querySelector('#st-tlmode'), v => { saveSetting('tlMode', v); });
   onSeg(p.body.querySelector('#st-tlpage'), v => { saveSetting('tlPage', +v); });

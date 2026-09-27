@@ -52,12 +52,15 @@ body{font:var(--fs-base)/1.5 -apple-system,"PingFang SC","Microsoft YaHei",syste
 .banner .chip:active{transform:translateY(1px)}
 
 /* 滚动区（一屏一事） */
-.scroll{flex:1;overflow-y:auto;padding-bottom:calc(var(--tab-h) + 34px + env(safe-area-inset-bottom))}
+.scroll{flex:1;overflow-y:auto;padding-bottom:calc(var(--tab-h) + env(safe-area-inset-bottom))}
 .card{background:var(--surface);border-radius:var(--r);padding:14px;margin:12px;border:1px solid var(--line)}
 .card h2{margin:0 0 10px;font-size:var(--fs-lg);display:flex;align-items:center;gap:6px}
 .muted{color:var(--txt2);font-size:var(--fs-sm)}
 code{background:#eef1ee;padding:1px 5px;border-radius:4px;font-size:11px;color:var(--primary-d)}
 .draft{font-size:11px;color:var(--txt3);text-align:right;margin-top:6px;min-height:14px}
+/* 🔴 预设评语「只读参考」：选中标签后给一句例句供手打借鉴，不自动填入正文框 */
+.taghint{font-size:12px;color:var(--txt3);line-height:1.6;margin-top:6px}
+.taghint:empty{display:none}
 /* 🔴 常驻的规范建议是一整句，右对齐读不清（右对齐只适合「补录 2026-09-22」这类一行短提示） */
 .draft.rule{text-align:left;line-height:1.6}
 /* 🔴 记录规范实时提示：命中「分数 / 名次 / 他人姓名」时转为醒目块（左对齐才读得清） */
@@ -118,6 +121,15 @@ textarea{width:100%;border:1px solid var(--line);border-radius:var(--r-s);paddin
 /* 关注分类 chip：醒目红，区分正向能力（绿） */
 .chip.gz{background:var(--danger-bg);color:var(--danger);border-color:#f3c6c6}
 .chip.gz.on{background:var(--danger);color:#fff}
+/* 「编辑这节课」统一弹层里的小节标题（科目 / 教师） */
+.pk-lb{display:block;font-size:var(--fs-sm);color:var(--txt2);margin:0 0 2px;font-weight:600}
+/* 自定义科目 / 教师：＋ 后展开的内联输入行（避免依赖浏览器原生 prompt） */
+/* 🔴 .ta / .btn 全局都是 width:100%（占满整行）⇒ 这里必须显式覆盖 width:auto，
+   否则输入框被挤成一条、按钮反而占满整行 */
+.pk-add{display:flex;gap:8px;margin-top:8px;align-items:stretch}
+.pk-add[hidden]{display:none}
+.pk-add .ta{width:auto;flex:1;min-width:0;padding:8px 10px;box-sizing:border-box}
+.pk-add .btn{width:auto;flex:none;padding:8px 16px}
 
 /* 🔴 记录页分类 chips 与「成长时间线」筛选共用同一套 .chips/.chip 渲染（药丸、自动换行、一眼可选），
    不再单独做 2 列网格 —— 两处渲染必须完全一致 */
@@ -239,11 +251,13 @@ textarea{width:100%;border:1px solid var(--line);border-radius:var(--r-s);paddin
 .week th,.week td{border:1px solid var(--line);padding:0;text-align:center}
 .week th{background:#f2f5f2;color:var(--txt2);font-weight:600;padding:7px 0}
 .week td{height:42px;background:#fff}
-.week td .cell{width:100%;height:42px;display:flex;align-items:center;justify-content:center;
+.week td .cell{width:100%;height:42px;display:flex;flex-direction:column;align-items:center;justify-content:center;
   cursor:pointer;color:var(--txt);font-size:12px;padding:2px 3px;line-height:1.2;white-space:normal;word-break:break-all}
 .week td .cell.none{color:var(--txt3)}
-.week td.ro{background:#f7f9f7;color:var(--txt3);font-size:11px}
-.week td.ro.tu{background:#fdf3e3;color:#b7791f}
+/* 🔴 单元格里的教师名（科目下方小字） */
+.week td .cell .cl-t{font-size:10px;color:var(--txt3);line-height:1.1;margin-top:1px}
+.week td .cell.ro{color:var(--txt3);font-size:11px}
+.week td .cell.ro.tu{color:#b7791f}
 .week .pn{color:var(--txt3);font-size:11px;background:#f7f9f7}
 
 /* 归档档案柜行 */
@@ -265,8 +279,11 @@ textarea{width:100%;border:1px solid var(--line);border-radius:var(--r-s);paddin
 .sec-hd{font-size:13px;font-weight:700;color:var(--primary-d);margin:4px 0 6px}
 .trow{display:flex;align-items:center;gap:6px;padding:8px 0;border-top:1px solid var(--line)}
 .trow .tnm{width:66px;flex:none;font-size:13px}
-.trow .ti{flex:1;min-width:118px;max-width:180px;border:1px solid var(--line);border-radius:6px;
-  padding:6px 8px;font:inherit;font-size:13px;text-align:center;cursor:text;background:#fff}
+/* 🔴 作息时间：两个 type="time" 选择器并排（替换原来的手打文本框） */
+.trow .tpick{flex:1;display:flex;align-items:center;gap:6px;min-width:0}
+.trow .tdash{flex:none;font-size:12px;color:var(--txt3)}
+.trow .ti{flex:1;min-width:0;border:1px solid var(--line);border-radius:6px;
+  padding:6px 4px;font:inherit;font-size:13px;text-align:center;background:#fff;color:var(--txt1)}
 .trow .ti:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-bg)}
 
 /* 收缴 */
@@ -304,12 +321,7 @@ textarea{width:100%;border:1px solid var(--line);border-radius:var(--r-s);paddin
 .tab .ic{font-size:20px;line-height:1}
 .tab.on{color:var(--primary);font-weight:600}
 
-/* 🔴 页脚（tabbar 上方）：只显示版本号（更新入口已整合到「设置 → 刷新到最新版」） */
-.footer{position:absolute;left:0;right:0;bottom:calc(var(--tab-h) + env(safe-area-inset-bottom));
-  height:34px;background:var(--surface);border-top:1px solid var(--line);
-  display:flex;align-items:center;padding:0 14px;
-  font-size:12px;color:var(--txt2);z-index:25}
-.footer .ver{font-weight:600;color:var(--txt2)}
+/* 🔴 页脚已删除（版本号收进「设置 → 版本 / Build」一处），不再占用 tabbar 上方空间 */
 
 /* 弹层：底部 sheet + 全屏 picker（一律绝对定位于手机框内） */
 .mask{position:absolute;inset:0;background:rgba(0,0,0,.4);z-index:60;display:none;align-items:flex-end;justify-content:center}

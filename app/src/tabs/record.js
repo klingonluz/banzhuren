@@ -4,9 +4,9 @@ import { state } from '../state.js';
 import {
   listStudents, listRecordsPage, listRecordsByCategoryPage, listRecordsWithImgPage,
   addRecord, softDeleteRecord, restoreRecord,
-  countActiveRecords, getRecord, putImage, getImageBlob, incTagUse, listTags
+  countActiveRecords, getRecord, putImage, getImageBlob, incTagUse
 } from '../db/semester.js';
-import { WUYU, GUANZHU, GZ_GROUPS, GZ_SUB } from '../db/seed.js';
+import { WUYU, GUANZHU, GZ_GROUPS, GZ_SUB, TAGS_SEED } from '../db/seed.js';
 import { lintText, PHOTO_BAN, PHOTO_OK } from '../privacy.js';
 import {
   el, esc, toast, banner, openPicker, filterStudents, srowList,
@@ -25,9 +25,9 @@ const MAX_IMG = 6;
 let tlOffset = 0, tlFilter = '全部';
 let objUrls = [];                         // 🔴 createObjectURL 必须配对 revoke
 let tagCat = null, gzSub = null;          // 当前分类 / 当前关注子模块
-let libTags = [];                         // 标签库（db.tags 快照，便于渲染）
+// 🔴 标签为**系统预设常量**（不可增删改名）：直接从 seed 常量取，不再读库表 —— 库里那份是历史残留，不作数据源
+let libTags = TAGS_SEED.map(t => ({ ...t }));
 let form = { stu: null, tags: new Set(), imgs: [], date: '' };
-let lastAuto = '';
 let editingId = null;
 let allNames = [];                        // 全班姓名（含已转出）：评语「他人姓名」实时提醒用
 
@@ -56,14 +56,15 @@ function quickCard() {
     </div>
 
       <div class="field">
-        <label>标签（点分类筛选，再点标签选中）</label>
+        <label>标签（点分类筛选，再点标签选中；系统预设，不可修改）</label>
         <div class="chips" id="q-cats"></div>
         <div id="q-tags"></div>
       </div>
 
     <div class="field">
       <label>评语</label>
-      <textarea id="q-text" rows="3" placeholder="选标签自动填预设评语，可微调"></textarea>
+      <textarea id="q-text" rows="3" placeholder="自己写一句：他做了什么、带来什么变化"></textarea>
+      <div class="taghint" id="q-taghint"></div>
       <div class="draft" id="q-draft"></div>
       <div class="draft rule" id="q-rule"></div>
     </div>
@@ -99,7 +100,7 @@ function quickCard() {
     </div>
 
     <button class="btn mt" id="q-save">保存</button>
-    <div class="save-note">标签增删改名不影响已保存的记录。只有你复制的「AI 评语素材」会离开本设备，且已脱敏。</div>
+    <div class="save-note">标签为系统预设（9 分类 / 70 标签），不可增删改名。<b>评语由你自己写</b>：选中标签后下方会给出参考例句。只有你复制的「AI 评语素材」会离开本设备，且已脱敏。</div>
   </div>`;
 }
 
@@ -140,6 +141,7 @@ async function renderTags(box) {
     if (sb) sb.onclick = e => { const s = e.target.closest('[data-sub]'); if (!s) return; gzSub = s.dataset.sub; renderTags(box); };
   }
   syncTagUI(tagsEl);
+  renderTagHint();
 }
 
 function syncTagUI(tagsEl) {
@@ -147,7 +149,15 @@ function syncTagUI(tagsEl) {
 }
 function toggleTag(n) {
   if (form.tags.has(n)) form.tags.delete(n); else form.tags.add(n);
-  autoPreset(); saveDraft();
+  renderTagHint(); saveDraft();
+}
+// 🔴 预设评语改成「只读参考」：选中标签后显示例句供手打参考，**绝不自动填入正文框**（避免黑盒替你写字）
+function renderTagHint() {
+  const box = document.getElementById('q-taghint'); if (!box) return;
+  const ps = [...form.tags].map(n => (libTags.find(t => t.name === n) || {}).presetComment).filter(Boolean);
+  box.innerHTML = ps.length
+    ? `<div class="taghint">参考例句：${ps.map(esc).join('　')}</div>`
+    : '';
 }
 
 /* ---- 草稿（localStorage：存储熔断时 IDB 写不进，草稿仍要能存） ---- */
@@ -171,17 +181,7 @@ function loadDraft() {
   try { return JSON.parse(localStorage.getItem(draftKey()) || 'null'); } catch { return null; }
 }
 
-/* ---- 评语自动预设（仅当设置开启；默认关，避免标签已很细还自动灌评语显得臃肿） ---- */
-/* 🔴 读取实时 libTags（不是 seed.js 的静态 TAG_PRESET），这样老师在「标签库」改过的预设评语立即生效 */
-function autoPreset() {
-  if (!state.settings.autoComment) { lastAuto = ''; return; }
-  const ta = document.getElementById('q-text'); if (!ta) return;
-  if (!form.tags.size) { if (ta.value === lastAuto) ta.value = ''; lastAuto = ''; saveDraft(); return; }
-  const ps = [...form.tags].map(n => (libTags.find(t => t.name === n) || {}).presetComment).filter(Boolean);
-  const v = ps.length ? ps.join('') : `该生${[...form.tags].join('、')}，表现突出。`;
-  if (ta.value === '' || ta.value === lastAuto) { ta.value = v; lastAuto = v; }
-  saveDraft();
-}
+/* ---- 评语：全由老师手写。预设例句只在标签下方做只读参考（见 renderTagHint），不再自动填入 ---- */
 
 /* ---- 图片 ---- */
 async function compressImage(file) {
@@ -443,7 +443,6 @@ export async function mount(scrollEl) {
   (await listStudents(state.db, { includeOut: true })).forEach(s => nmap[s.id] = s.name);
   allNames = Object.values(nmap).filter(Boolean);
   const stats = await computeStats();
-  libTags = await listTags(state.db);
   if (!tagCat) tagCat = state.settings.defaultCat || WUYU[0];
   if (!gzSub) gzSub = Object.keys(GZ_GROUPS)[0];
 
@@ -592,7 +591,7 @@ export async function mount(scrollEl) {
       });
       for (const n of rec.tags) { try { await incTagUse(db, n, 1); } catch {} }   // 使用频率 +1
       // 成功才清空：清标签/评语/图片，保留学生由 afterSave 决定
-      form.tags.clear(); lastAuto = ''; form.imgs.forEach(i => URL.revokeObjectURL(i.url)); form.imgs = [];
+      form.tags.clear(); form.imgs.forEach(i => URL.revokeObjectURL(i.url)); form.imgs = [];
       qText.value = '';
       const keep = state.settings.afterSave !== 'clear';
       if (!keep) { form.stu = null; redrawStu(); }

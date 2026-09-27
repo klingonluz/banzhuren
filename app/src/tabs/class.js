@@ -7,7 +7,7 @@ import { esc, toast, openPicker, emptyState, confirm, onSeg, filterStudents } fr
 import { pad } from '../util.js';
 
 const DAYS = ['周一', '周二', '周三', '周四', '周五'];
-const SUBJECTS = ['语文', '数学', '英语', '科学', '体育', '音乐', '美术', '信息', '劳技', '阅读', '班会', '自习', ''];
+const SUBJECTS = ['语文', '数学', '英语', '科学', '体育', '音乐', '美术', '信息', '劳动', '阅读', '班会', '自习', ''];
 
 let schedMode = 'class';      // class | mine
 let season = 'summer';        // summer | winter
@@ -43,13 +43,21 @@ function parity() { return weekNo() % 2 === 1 ? 'odd' : 'even'; }   // 单数周
 function weekParityLabel() { return parity() === 'odd' ? '单周' : '双周'; }
 
 /* ---------- 数据模型归一化（兼容旧库：root weekly / classes[] → 本班 + 授课班级） ---------- */
+// 🔴 本班课表单元格：旧库存「字符串」（'语文'），新库存 {subject, teacher}
+//    ⇒ 读时统一归一化，**不动库结构、不 bump schema**（迁移规则见 db/migrate.js）
+function normCell(c) {
+  if (!c) return null;
+  if (typeof c === 'string') return { subject: c, teacher: '' };
+  const o = { subject: c.subject || '', teacher: c.teacher || '' };
+  return (o.subject || o.teacher) ? o : null;
+}
 function normalizeWeekly(weekly, nPer) {
   const w = [];
   for (let d = 0; d < 5; d++) {
     const row = (weekly && weekly[d]) ? [...weekly[d]] : [];
-    while (row.length < nPer) row.push('');
+    while (row.length < nPer) row.push(null);
     if (row.length > nPer) row.length = nPer;
-    w.push(row);
+    w.push(row.map(normCell));
   }
   return w;
 }
@@ -100,6 +108,8 @@ function normalizeSched(sched, semester) {
   flattenMine(sched.mine.weekly).forEach(c => { if (c && c.cls && !tc.has(c.cls)) tc.set(c.cls, { id: c.cls, name: c.cls }); });
   sched.teachClasses = [...tc.values()];
   if (!Array.isArray(sched.customSubjects)) sched.customSubjects = [];
+  // 🔴 自定义教师名单（本班老师）：与 customSubjects 同款「就地累积」，无 schema 变更
+  if (!Array.isArray(sched.customTeachers)) sched.customTeachers = [];
   delete sched.classes;
   delete sched.weekly;
   delete sched.mineSubject;
@@ -131,11 +141,21 @@ function todayListHTML(sched) {
     }
     // 本班课表（班主任单一固定班，无班级选择）；分单双周时按当前周奇偶取对应课表
     const hsrc = useSplit() ? (parity() === 'odd' ? sched.homeroom?.weekly : sched.homeroom?.weeklyEven) : sched.homeroom?.weekly;
-    const course = ro ? (p.name || '') : ((hsrc?.[dayIdx]?.[periods.indexOf(p)]) || '');
+    let main = '', tchr = '';
+    if (ro) {
+      // 🔴 辅导 / 大课间 / 课后服务：可填教师名（辅导尤其需要，早读谁守一目了然）
+      const c = normCell(hsrc?.[dayIdx]?.[periods.indexOf(p)]);
+      main = p.name || '';
+      tchr = c?.teacher || '';
+    } else {
+      const c = normCell(hsrc?.[dayIdx]?.[periods.indexOf(p)]);
+      main = c?.subject || (p.type === 'class' ? '—' : p.name);
+      tchr = c?.teacher || '';
+    }
     return `<div class="sch-row ${now ? 'now' : ''}">
       <div class="sch-p ${b.cls} ${now ? 'now' : ''}">${esc(b.txt)}</div>
       <div class="sch-t">${esc(periodTime(p))}</div>
-      <div class="sch-s">${esc(course || (p.type === 'class' ? '—' : p.name))}</div>
+      <div class="sch-s">${esc(main)}${tchr ? `<span class="sch-cls">${esc(tchr)}</span>` : ''}</div>
     </div>`;
   }).join('');
   return rows || '<div class="empty">今天没有课 🎉</div>';
@@ -167,7 +187,6 @@ function scheduleCard(sched) {
 }
 
 /* ---- 科目 chips：两处（周课表单选 / 我的课表「科目+班级」）共用，避免副本各改一半（P2-4） ---- */
-const PROMPT_SUBJECT = '自定义科目名称（如：校本 / 心理 / 写字）';
 // 选中态由调用方通过 cur 传入；末尾两项是「＋ 自定义科目」「（清空）」
 function subjectChipsHTML(all, cur) {
   return all.map(s => `<span class="chip ${s === cur ? 'on' : ''}" data-s="${esc(s)}">${esc(s)}</span>`).join('')
@@ -185,25 +204,96 @@ function addCustomSubject(sched, save, name) {
 }
 
 /* ================= ② 周课表（按选中班级编辑） ================= */
-function subjectPicker(cur, sched, onPick, save) {
-  const all = allSubjects(sched);
+// 🔴 统一「编辑这节课」弹层：**一个页面**里同时选科目 + 选教师（不再点两次、不再连开两个弹层）。
+//    - 正课：科目 chips（可自定义）+ 教师 chips（可自定义 / 手输）
+//    - 辅导 / 大课间：只显示教师区（不排科目）
+//    确定时一次性回调 onOk({ subject, teacher })。
+// 🔴 自定义名字一律用**弹层内联输入**，**绝不用浏览器原生 prompt**：
+//    预览面板 / 部分手机内置浏览器会对 prompt() 静默返回 null（点了「没反应」），且体验差。
+function cellPicker({ subjectWanted, curSubject, curTeacher, sched, save, onOk }) {
   const p = openPicker({
-    title: '选择科目',
-    body: `<div style="padding:12px 14px" class="chips">${subjectChipsHTML(all, cur)}</div>`,
-    foot: `<button class="btn ghost" data-pclose>取消</button>`
+    title: subjectWanted ? '编辑这节课' : '填写值守教师',
+    lead: subjectWanted ? '选科目；下方可顺手选/加教师（留空则只显示科目）。' : '选或添加值守教师；留空表示未定。',
+    body: `<div style="padding:12px 14px">
+      ${subjectWanted ? `<label class="pk-lb">科目</label>
+      <div class="chips" id="cp-subs">${subjectChipsHTML(allSubjects(sched), curSubject || '')}</div>
+      <div class="pk-add" id="cp-subadd" hidden>
+        <input class="ta" id="cp-subin" placeholder="新科目名称（如：心理 / 校本 / 写字）" autocomplete="off">
+        <button class="btn tiny" id="cp-subgo">添加</button>
+      </div>` : ''}
+      <label class="pk-lb"${subjectWanted ? ' style="margin-top:14px;display:block"' : ''}>教师</label>
+      <div class="chips" id="cp-tch"></div>
+      <div class="pk-add" id="cp-tchadd" hidden>
+        <input class="ta" id="cp-tchin" placeholder="教师姓名（如：王老师 / 李老师）" autocomplete="off">
+        <button class="btn tiny" id="cp-tchgo">添加</button>
+      </div>
+    </div>`,
+    foot: `<button class="btn ghost" data-pclose>取消</button><button class="btn" id="cp-ok">确定</button>`
   });
-  p.body.onclick = e => {
-    const cs = e.target.closest('[data-custom]');
-    if (cs) {
-      const name = addCustomSubject(sched, save, window.prompt(PROMPT_SUBJECT) || '');
-      if (name) { onPick(name); p.close(); }
-      return;
-    }
-    const c = e.target.closest('[data-s]');
-    if (c) { onPick(c.dataset.s); p.close(); }
+  let subject = curSubject || '';
+  let teacher = curTeacher || '';
+  const tchBox = p.body.querySelector('#cp-tch');
+  const subBox = p.body.querySelector('#cp-subs');
+  const subAdd = p.body.querySelector('#cp-subadd');
+  const tchAdd = p.body.querySelector('#cp-tchadd');
+  // 教师 chips：本班老师（自定义累积）+「＋ 添加教师」+「（不填）」
+  // 🔴 若本格已填的教师不在名单里（历史数据/手输过），也一并列出来，避免「明明有值却选不中」
+  const redrawTch = () => {
+    const list = [...(sched.customTeachers || [])];
+    if (teacher && !list.includes(teacher)) list.push(teacher);
+    tchBox.innerHTML = list.map(t => `<span class="chip ${t === teacher ? 'on' : ''}" data-t="${esc(t)}">${esc(t)}</span>`).join('')
+      + '<span class="chip" data-tadd="1">＋ 添加教师</span>'
+      + `<span class="chip ${teacher ? '' : 'on'}" data-t="">（不填）</span>`;
   };
+  redrawTch();
+  // 展开内联输入并聚焦；再点同一「＋」则收起；两个区**互斥**（展开一个顺手收起另一个）
+  const openAdd = (wrap, inp, other) => {
+    const willOpen = wrap.hidden;
+    if (other) other.hidden = true;
+    wrap.hidden = !willOpen;
+    if (willOpen) setTimeout(() => inp.focus(), 0);
+  };
+  if (subBox) subBox.onclick = e => {
+    const cs = e.target.closest('[data-custom]');
+    if (cs) { openAdd(subAdd, p.body.querySelector('#cp-subin'), tchAdd); return; }
+    const c = e.target.closest('[data-s]');
+    if (c) { subject = c.dataset.s; subBox.querySelectorAll('.chip').forEach(x => x.classList.toggle('on', x.dataset.s === subject)); }
+  };
+  if (subAdd) {
+    const inp = p.body.querySelector('#cp-subin');
+    const commitSub = () => {
+      const name = addCustomSubject(sched, save, inp.value);
+      if (name) {
+        subject = name; inp.value = ''; subAdd.hidden = true;
+        subBox.querySelectorAll('.chip').forEach(x => x.classList.remove('on'));
+        const sp = document.createElement('span'); sp.className = 'chip on'; sp.dataset.s = name; sp.textContent = name;
+        subBox.insertBefore(sp, subBox.querySelector('[data-custom]'));
+      } else toast('请输入科目名称');
+    };
+    p.body.querySelector('#cp-subgo').onclick = commitSub;
+    inp.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); commitSub(); } };
+  }
+  tchBox.onclick = e => {
+    const ta = e.target.closest('[data-tadd]');
+    if (ta) { openAdd(tchAdd, p.body.querySelector('#cp-tchin'), subAdd); return; }
+    const t = e.target.closest('[data-t]');
+    if (t) { teacher = t.dataset.t; redrawTch(); }
+  };
+  if (tchAdd) {
+    const inp = p.body.querySelector('#cp-tchin');
+    const commitTch = () => {
+      const nm = inp.value.trim();
+      if (!nm) { toast('请输入教师姓名'); return; }
+      if (!(sched.customTeachers || []).includes(nm)) { sched.customTeachers = [...(sched.customTeachers || []), nm]; save(); }
+      teacher = nm; inp.value = ''; tchAdd.hidden = true; redrawTch();
+    };
+    p.body.querySelector('#cp-tchgo').onclick = commitTch;
+    inp.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); commitTch(); } };
+  }
+  p.foot.querySelector('#cp-ok').onclick = () => { onOk({ subject, teacher }); p.close(); };
   return p;
 }
+
 
 function openWeek(db, sched, rerender) {
   const periods = (sched?.periods || []).map(p => ({ ...p }));
@@ -218,9 +308,10 @@ function openWeek(db, sched, rerender) {
         return `<tr>
           <td class="pn">${esc(p.name)}</td>
           ${DAYS.map((_, di) => {
-            if (ro) return `<td class="ro ${p.type === 'tutor' ? 'tu' : ''}">${esc(p.name)}</td>`;
-            const c = weekly[di] ? (weekly[di][pi] || '') : '';
-            return `<td><div class="cell ${c ? '' : 'none'}" data-p="${pi}" data-d="${di}">${esc(c || '＋')}</div></td>`;
+            const c = weekly[di] ? normCell(weekly[di][pi]) : null;
+            // 🔴 辅导 / 大课间：只填教师（不排科目）；正课：科目 + 教师。两者都可点开编辑。
+            if (ro) return `<td><div class="cell ro ${p.type === 'tutor' ? 'tu' : ''} ${c?.teacher ? '' : 'none'}" data-p="${pi}" data-d="${di}" data-ro="1">${esc(c?.teacher || '＋教师')}</div></td>`;
+            return `<td><div class="cell ${c?.subject ? '' : 'none'}" data-p="${pi}" data-d="${di}">${esc(c?.subject || '＋')}${c?.teacher ? `<span class="cl-t">${esc(c.teacher)}</span>` : ''}</div></td>`;
           }).join('')}
         </tr>`;
       }).join('')}
@@ -230,19 +321,24 @@ function openWeek(db, sched, rerender) {
       <div class="muted" style="margin:0 0 8px">正在编辑：<b>本班（${esc(sched.homeroom?.name || '本班')}）</b> 的周课表<span id="wk-parity-lb">${useSplit() ? ' · <b style="color:var(--primary)">' + (editParity === 'odd' ? '单周' : '双周') + '</b>' : ''}</span></div>
       ${useSplit() ? `<div class="seg" id="wk-parity" style="margin-bottom:8px"><button data-v="odd" class="${editParity === 'odd' ? 'on' : ''}">单周课表</button><button data-v="even" class="${editParity === 'even' ? 'on' : ''}">双周课表</button></div>` : ''}
       <div id="wk-table">${tableHTML()}</div>
-      <div class="save-note">点格子选科目；<b>辅导 / 大课间不可点</b>；没有的科目点「＋ 自定义科目」。${useSplit() ? '单双周各一套，互不覆盖。' : ''}</div>
+      <div class="save-note">点格子选科目 + 选教师（同一页面）；<b>辅导、大课间只填教师</b>；没有的科目 / 教师点「＋ 添加」。填了教师名，今日课表会一并显示。${useSplit() ? '单双周各一套，互不覆盖。' : ''}</div>
     </div>`;
   const p = openPicker({ title: '周课表', body, foot: `<button class="btn ghost" data-pclose>关闭</button><button class="btn" id="wk-save">保存课表</button>` });
   const onCell = e => {
     const cell = e.target.closest('.cell'); if (!cell) return;
     const pi = +cell.dataset.p, di = +cell.dataset.d;
-    const cur = weekly[di] ? (weekly[di][pi] || '') : '';
-    subjectPicker(cur, sched, s => {
+    const cur = weekly[di] ? normCell(weekly[di][pi]) : null;
+    const apply = ({ subject, teacher }) => {
+      const c = { subject: subject || '', teacher: teacher || '' };
       weekly[di] = weekly[di] || [];
-      weekly[di][pi] = s;
-      cell.textContent = s || '＋';
-      cell.classList.toggle('none', !s);
-    }, save);
+      weekly[di][pi] = (c.subject || c.teacher) ? c : null;
+      p.body.querySelector('#wk-table').innerHTML = tableHTML(); bindTable();
+    };
+    if (cell.dataset.ro) {            // 辅导 / 大课间：只填教师
+      cellPicker({ subjectWanted: false, curTeacher: cur?.teacher, sched, save, onOk: apply });
+      return;
+    }
+    cellPicker({ subjectWanted: true, curSubject: cur?.subject, curTeacher: cur?.teacher, sched, save, onOk: apply });
   };
   const bindTable = () => p.body.querySelector('#wk-table').querySelector('.week').addEventListener('click', onCell);
   bindTable();
@@ -263,19 +359,28 @@ function openWeek(db, sched, rerender) {
 }
 
 /* ================= ②-b 我的课表（单张自填表：每格 = 科目 + 班级） ================= */
+// 🔴 与 cellPicker 同款：自定义科目 / 新班级一律**内联输入**，不用浏览器原生 prompt（预览面板会被拦）
 function openMineCell(cur, sched, onPick, save) {
   const all = allSubjects(sched);
   const classList = () => sched.teachClasses || [];
   const p = openPicker({
     title: '填写本节课',
     body: `<div style="padding:12px 14px">
-      <label class="muted" style="font-size:12px">科目</label>
+      <label class="pk-lb">科目</label>
       <div class="chips" id="mc-subs">${subjectChipsHTML(all, cur?.subject)}</div>
-      <label class="muted" style="font-size:12px;display:block;margin-top:12px">班级</label>
+      <div class="pk-add" id="mc-subadd" hidden>
+        <input class="ta" id="mc-subin" placeholder="新科目名称（如：心理 / 校本 / 写字）" autocomplete="off">
+        <button class="btn tiny" id="mc-subgo">添加</button>
+      </div>
+      <label class="pk-lb" style="margin-top:14px;display:block">班级</label>
       <div class="chips" id="mc-cls">${classList().length
         ? classList().map(c => `<span class="chip ${cur?.cls === c.name ? 'on' : ''}" data-c="${esc(c.name)}">${esc(c.name)}</span>`).join('')
         : '<span class="muted">请先在「授课班级」添加班级</span>'}
         <span class="chip" data-cnew="1">＋ 新班级</span></div>
+      <div class="pk-add" id="mc-clsadd" hidden>
+        <input class="ta" id="mc-clsin" placeholder="新班级名称（如：三年三班）" autocomplete="off">
+        <button class="btn tiny" id="mc-clsgo">添加</button>
+      </div>
     </div>`,
     foot: `<button class="btn ghost" data-pclose>取消</button><button class="btn" id="mc-ok">确定</button>`
   });
@@ -283,40 +388,57 @@ function openMineCell(cur, sched, onPick, save) {
   let cls = cur?.cls || '';
   const subBox = p.body.querySelector('#mc-subs');
   const clsBox = p.body.querySelector('#mc-cls');
+  const subAdd = p.body.querySelector('#mc-subadd');
+  const clsAdd = p.body.querySelector('#mc-clsadd');
   const redrawCls = () => {
     clsBox.innerHTML = (classList().length
       ? classList().map(c => `<span class="chip ${cls === c.name ? 'on' : ''}" data-c="${esc(c.name)}">${esc(c.name)}</span>`).join('')
       : '<span class="muted">请先在「授课班级」添加班级</span>')
       + `<span class="chip" data-cnew="1">＋ 新班级</span>`;
   };
+  const openAdd = (wrap, inp, other) => {
+    const willOpen = wrap.hidden;
+    if (other) other.hidden = true;
+    wrap.hidden = !willOpen;
+    if (willOpen) setTimeout(() => inp.focus(), 0);
+  };
   subBox.onclick = e => {
     const cs = e.target.closest('[data-custom]');
-    if (cs) {
-      const nm = addCustomSubject(sched, save, window.prompt(PROMPT_SUBJECT) || '');
-      if (nm) {
-        subject = nm;
-        subBox.querySelectorAll('.chip').forEach(x => x.classList.remove('on'));
-        const sp = document.createElement('span'); sp.className = 'chip on'; sp.dataset.s = nm; sp.textContent = nm; subBox.appendChild(sp);
-      }
-      return;
-    }
+    if (cs) { openAdd(subAdd, p.body.querySelector('#mc-subin'), clsAdd); return; }
     const c = e.target.closest('[data-s]');
     if (c) { subject = c.dataset.s; subBox.querySelectorAll('.chip').forEach(x => x.classList.toggle('on', x.dataset.s === subject)); }
   };
+  {
+    const inp = p.body.querySelector('#mc-subin');
+    const commit = () => {
+      const nm = addCustomSubject(sched, save, inp.value);
+      if (!nm) { toast('请输入科目名称'); return; }
+      subject = nm; inp.value = ''; subAdd.hidden = true;
+      subBox.querySelectorAll('.chip').forEach(x => x.classList.remove('on'));
+      const sp = document.createElement('span'); sp.className = 'chip on'; sp.dataset.s = nm; sp.textContent = nm; subBox.appendChild(sp);
+    };
+    p.body.querySelector('#mc-subgo').onclick = commit;
+    inp.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); commit(); } };
+  }
   clsBox.onclick = e => {
     const cn = e.target.closest('[data-cnew]');
-    if (cn) {
-      const nm = (window.prompt('新班级名称（如：三年三班）') || '').trim();
-      if (nm) {
-        const nc = { id: 'cls_' + Date.now().toString(36), name: nm };
-        sched.teachClasses = sched.teachClasses || []; sched.teachClasses.push(nc); save();
-        cls = nm; redrawCls();
-      }
-      return;
-    }
+    if (cn) { openAdd(clsAdd, p.body.querySelector('#mc-clsin'), subAdd); return; }
     const c = e.target.closest('[data-c]');
     if (c) { cls = c.dataset.c; clsBox.querySelectorAll('.chip').forEach(x => x.classList.toggle('on', x.dataset.c === cls)); }
   };
+  {
+    const inp = p.body.querySelector('#mc-clsin');
+    const commit = () => {
+      const nm = inp.value.trim();
+      if (!nm) { toast('请输入班级名称'); return; }
+      if (classList().some(c => c.name === nm)) { cls = nm; inp.value = ''; clsAdd.hidden = true; redrawCls(); return; }
+      const nc = { id: 'cls_' + Date.now().toString(36), name: nm };
+      sched.teachClasses = sched.teachClasses || []; sched.teachClasses.push(nc); save();
+      cls = nm; inp.value = ''; clsAdd.hidden = true; redrawCls();
+    };
+    p.body.querySelector('#mc-clsgo').onclick = commit;
+    inp.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); commit(); } };
+  }
   p.foot.querySelector('#mc-ok').onclick = () => {
     onPick(subject ? { subject, cls } : null);
     p.close();
@@ -398,14 +520,29 @@ function openTeachClasses(db, sched, rerender) {
         save();
       };
     });
+    // 🔴 「添加授课班级」= 就地新增一个待填名输入行（不用浏览器原生 prompt：预览面板会被静默拦截）
     b.querySelector('#cc-add').onclick = () => {
-      const nm = (window.prompt('添加的授课班级名称（如：三年三班）') || '').trim();
-      if (nm) {
-        if ((sched.teachClasses || []).some(c => c.name === nm)) { toast('已有同名班级'); return; }
+      const row = document.createElement('div');
+      row.className = 'cls-card';
+      row.innerHTML = `<div class="cls-hd">
+        <input class="ta cc-new" placeholder="新授课班级名称（如：三年三班）" autocomplete="off">
+        <button class="mini" data-newok="1">添加</button>
+        <button class="mini danger" data-newcancel="1">取消</button>
+      </div>`;
+      b.insertBefore(row, b.querySelector('#cc-add'));
+      const inp = row.querySelector('.cc-new');
+      setTimeout(() => inp.focus(), 0);
+      const commit = () => {
+        const nm = inp.value.trim();
+        if (!nm) { row.remove(); return; }
+        if ((sched.teachClasses || []).some(c => c.name === nm)) { toast('已有同名班级'); inp.select(); return; }
         sched.teachClasses = sched.teachClasses || [];
         sched.teachClasses.push({ id: 'cls_' + Date.now().toString(36), name: nm });
         save(); draw();
-      }
+      };
+      row.querySelector('[data-newok]').onclick = commit;
+      row.querySelector('[data-newcancel]').onclick = () => row.remove();
+      inp.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); commit(); } };
     };
     b.querySelectorAll('[data-del]').forEach(btn => {
       btn.onclick = () => confirm({
@@ -474,18 +611,49 @@ function openSched(db, sched, rerender) {
       }).join('')}</div>
       <button class="btn ghost tiny" id="sd-add" style="margin-top:10px">＋ 新增节次</button>
       <div class="save-note">夏冬共用同一套节次结构；增删改只动结构，不丢已排的课。</div>`;
+  // 🔴 时间输入用两个 type="time" 选择器（手机上是系统滚轮/钟面，比手打「08:00-08:40」快且不会打错）
+  //    存储格式不变，仍是 "HH:MM-HH:MM" 字符串 ⇒ 零迁移（inPeriod() 等解析逻辑不动）
+  const splitTime = v => {
+    const m = /^\s*(\d{1,2}:\d{2})\s*[-~—－]\s*(\d{1,2}:\d{2})\s*$/.exec(v || '');
+    return m ? [m[1], m[2]] : ['', ''];
+  };
+  const joinTime = (a, b) => (a && b) ? `${a}-${b}` : '';
   const timeHTML = () => `
       <div class="seg" id="sd-season" style="margin-bottom:8px">
         <button data-v="summer" class="${seasonTab === 'summer' ? 'on' : ''}">夏季</button>
         <button data-v="winter" class="${seasonTab === 'winter' ? 'on' : ''}">冬季</button>
       </div>
-      <div id="sd-times">${defs.map((d, i) => `
-        <div class="trow">
+      <div id="sd-times">${defs.map((d, i) => {
+        const [a, b] = splitTime(seasonTab === 'summer' ? d.summer : d.winter);
+        return `<div class="trow">
           <div class="tnm">${esc(d.name)}</div>
-          <input class="ti" data-t="${i}" value="${esc(seasonTab === 'summer' ? (d.summer || '') : (d.winter || ''))}"
-            placeholder="如 08:00-08:40" autocomplete="off" enterkeyhint="done">
-        </div>`).join('')}</div>
+          <div class="tpick">
+            <input class="ti" type="time" data-t="${i}" data-k="a" value="${esc(a)}" aria-label="${esc(d.name)} 开始时间">
+            <span class="tdash">至</span>
+            <input class="ti" type="time" data-t="${i}" data-k="b" value="${esc(b)}" aria-label="${esc(d.name)} 结束时间">
+          </div>
+        </div>`;
+      }).join('')}</div>
       <div class="save-note">每节时间都能改；辅导、大课间在周课表里不排科目。</div>`;
+  // 从当前 DOM 读回某一季的完整时间串（取值时才开始拼，避免半填状态写坏数据）
+  const readTimes = () => {
+    const out = defs.map(() => ['', '']);
+    p.body.querySelectorAll('#sd-times .ti').forEach(inp => {
+      out[+inp.dataset.t] = out[+inp.dataset.t] || ['', ''];
+      out[+inp.dataset.t][inp.dataset.k === 'a' ? 0 : 1] = inp.value || '';
+    });
+    return out;
+  };
+  // 🔴 把当前显示的「夏季/冬季」时间落回 defs（切季、切栏、保存前都要调，否则切走即丢）
+  const flushTimes = () => {
+    if (pane !== 'time') return;
+    const rows = readTimes();
+    rows.forEach(([a, b], i) => {
+      if (!defs[i]) return;
+      if (seasonTab === 'summer') defs[i].summer = joinTime(a, b);
+      else defs[i].winter = joinTime(a, b);
+    });
+  };
   const draw = () => {
     const b = p.body.querySelector('#sd-body');
     b.innerHTML = `
@@ -494,7 +662,7 @@ function openSched(db, sched, rerender) {
         <button data-v="time" class="${pane === 'time' ? 'on' : ''}">② 作息时间</button>
       </div>
       ${pane === 'struct' ? structHTML() : timeHTML()}`;
-    onSeg(b.querySelector('#sd-pane'), v => { pane = v; draw(); });
+    onSeg(b.querySelector('#sd-pane'), v => { if (v !== pane) flushTimes(); pane = v; draw(); });
     if (pane === 'struct') {
       b.querySelector('#sd-rows').onclick = e => {
         const up = e.target.closest('[data-up]'), dn = e.target.closest('[data-dn]');
@@ -508,12 +676,8 @@ function openSched(db, sched, rerender) {
       };
       b.querySelector('#sd-add').onclick = () => { defs.push({ no: 0, name: '新节次', type: 'class', summer: '', winter: '' }); renumber(defs); draw(); };
     } else {
-      onSeg(b.querySelector('#sd-season'), v => { seasonTab = v; draw(); });
-      b.querySelector('#sd-times').oninput = e => {
-        const i = +e.target.dataset.t;
-        if (seasonTab === 'summer') defs[i].summer = e.target.value; else defs[i].winter = e.target.value;
-      };
-      // 🔴 手机键盘会盖住下半屏：聚焦后把这一行滚到屏幕中间，避免「打了字却看不见」
+      onSeg(b.querySelector('#sd-season'), v => { if (v !== seasonTab) flushTimes(); seasonTab = v; draw(); });
+      // 🔴 type="time" 是系统选择器，不需要防键盘遮挡；只做「选完自动跳到下一次开始时间」的顺手优化
       b.querySelectorAll('#sd-times .ti').forEach(inp => {
         inp.addEventListener('focus', () => setTimeout(() => { try { inp.scrollIntoView({ block: 'center' }); } catch (e) { } }, 260));
       });
@@ -553,6 +717,7 @@ function openSched(db, sched, rerender) {
   }
   draw();
   p.foot.querySelector('#sd-save').onclick = async () => {
+    flushTimes();                                     // 🔴 先把当前季的时间落回 defs，再存
     // 🔴 写回同一对象：展开成新对象会让内存里的 sched 不更新，卡片「今日课表」时间不刷新
     sched.periods = defs;
     await saveSchedule(db, sched);

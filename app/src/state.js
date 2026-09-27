@@ -19,7 +19,6 @@ export const state = {
     persisted: false,
     lastExport: null,
     defaultCat: '能力感知力',   // 极速记录默认选中的能力分类（V11.1 本版变更）
-    autoComment: false,       // 选标签时是否自动填充预设评语（默认关，避免臃肿；需要再开）
     classWeekSplit: 'off',    // 班级课表是否分单双周：off 统一课表 / on 单双周轮换
     photoGuard: 'on',         // 照片入库必须确认（on / off）
     aiDateGrain: 'month',     // AI 素材日期精度：month 只到月 / full 保留完整
@@ -59,7 +58,6 @@ export async function loadSettings() {
   s.teacherName = await getSetting('teacherName', '');
   s.lastExport = await getSetting('lastExport', null);
   s.defaultCat = await getSetting('defaultCat', '能力感知力');
-  s.autoComment = await getSetting('autoComment', false);
   s.classWeekSplit = await getSetting('classWeekSplit', 'off');
   // 🔴 P0-3：这两项原先只写不读 ⇒ 重启后被静默重置。photoGuard 被重置会让老师手动关掉的
   //    「照片入库确认」又冒出来；aiDateGrain 被重置会让"日期保留完整"失效。

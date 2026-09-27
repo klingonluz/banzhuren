@@ -83,7 +83,7 @@ export function openPicker({ id = '', title = '', lead = '', body = '', foot = '
     closed = true;
     entry.live = false;                       // 这次历史条目已被消费，popstate 时不必再执行回调
     mask.remove();
-    if (!fromBack) { try { window.history.back(); } catch (_) {} }
+    if (!fromBack) { try { noteBack(); window.history.back(); } catch (_) {} }
     onClose && onClose();
   };
   const entry = pushHistory(() => close(true));   // 安卓物理返回键兜底（§4.8.11-6）
@@ -99,6 +99,7 @@ export function closePickers() {
 
 /* ---------- 物理返回键兜底（history.pushState） ---------- */
 const backStack = [];
+let backsInFlight = 0;                    // 已调 history.back()、但 popstate 尚未落地的次数
 export function pushHistory(fn) {
   const entry = { fn, live: true };
   backStack.push(entry);
@@ -108,10 +109,22 @@ export function pushHistory(fn) {
 // 🔴 主动关闭要**消费掉**对应历史条目（调用方置 entry.live = false 后再 history.back()），
 //    否则每开关一次弹层就多留一条历史，安卓返回键要连按很多次才退得出页面（P1-12）。
 window.addEventListener('popstate', () => {
+  if (backsInFlight > 0) { backsInFlight--; }
   const entry = backStack.pop();
+  if (backWaiters.length) { const fns = backWaiters.splice(0); fns.forEach(f => { try { f(); } catch {} }); return; }
   if (!entry || !entry.live) return;     // 已被主动关闭消费掉 → 不重复执行
   try { entry.fn(); } catch {}
 });
+// 🔴 close() 里的 history.back() 是**异步**的：若紧接着 pushHistory 开了新弹层，
+//    那个迟到的 popstate 会把**新弹层**当成栈顶弹掉（表现为「点了没反应」——填教师踩过这个坑）。
+//    afterBack(fn)：把 fn 推迟到下一次 popstate 之后跑（没有等待中的 back 则立刻跑），这样新弹层不会被打回。
+const backWaiters = [];
+export function afterBack(fn) {
+  if (backsInFlight === 0) { fn(); return; }
+  backWaiters.push(fn);
+}
+// 供 openPicker.close() 调用：标记「我刚发起了一次 history.back()，popstate 还没到」
+export function noteBack() { backsInFlight++; }
 
 /* ---------- 学生搜索：四处共用的过滤与行渲染（P2-4） ---------- */
 // 🔴 记录页选学生 / 管理名单 / 导出面板 / AI 素材面板各写过一份「姓名 includes 或拼音首字母 includes」，
