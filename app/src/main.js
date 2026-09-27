@@ -27,7 +27,7 @@ let activeTab = 'record';
 // 🔴 产品版本号（对外：页脚展示 + 更新 UI）。语义化：修 bug 升末位（v1.0.1）、
 //    加功能升中位（v1.1.0）、数据结构不兼容升首位（v2.0.0）。首个公开发布 = v1.0.0。
 //    注意：内部还有一套「方案文档版本号」（如 V11.10），只用于设计记录，不对外，见 tabs/data.js 的 PLAN_VER。
-const APP_VER = 'v1.7.2';
+const APP_VER = 'v1.7.3';
 // 🔴 部署网址锚点（换网址风险防护，§13.7.1）：留空 = 首次启动自动记录当前 origin 并比对；
 //    上线固定域名后建议填死，例如 'https://banzhuren.example.com'，网址变化即弹告警提醒导入备份。
 const EXPECTED_ORIGIN = '';
@@ -159,7 +159,7 @@ async function hintFor(key) {
   const HINTS = {
     record: { anchor: '#q-stu', text: '先点这里选学生，再点标签、写评语，30 秒记一条。' },
     class:  { anchor: '#cl-today', text: '课表按节次索引：改作息不会让课程错位。' },
-    analysis: { anchor: '#an-ai', text: '要发给 AI 就用「AI 评语素材」：姓名换代号，分数名次日期自动隐去，照片不参与。' },
+    analysis: { anchor: '#an-ai', text: '要发给 AI 就用「AI 评语素材」：姓名换成一次性代号，照片不参与。' },
     data:   { anchor: '#dt-backup', text: '定期导出备份是唯一的保险；给家长看的材料用「成长记录文本」。' },
   };
   const h = HINTS[key]; if (!h) return;

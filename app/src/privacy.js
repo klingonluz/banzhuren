@@ -19,24 +19,75 @@ export const PHOTO_OK = [
 ];
 
 /* ---------- 一次性代号 ---------- */
-const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-const OTHER = '某同学';                        // 他人的泛称
+// 🔴 代号形态：`同学` + 3 位随机（去混淆字符集）。
+//    为什么不再按名单顺序编号（同学A / 同学B…）：那样同一批学生**每次拿到的代号完全一样**，
+//    素材分批外发就能被横向关联（同一个人始终是「同学A」）⇒ 脱敏退化成「假名化」。
+//    随机码每次生成都不同；且只选 1 名学生时也有效（「洗牌」在 N=1 时是空操作，防不住）。
+// 🔴 字符集剔掉 0 O 1 I L —— AI 是「照抄」代号的，这五个最易抄错，抄错就还原不回来。
+const CODE_CHARS = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';   // 32 个
+const CODE_LEN = 3;                                      // 32³ = 32768 种，45 人班级绰绰有余
+const OTHER = '某同学';                                  // 他人的泛称
 export const MASK = { score: '〔分数〕', rank: '〔名次〕' };
 
-/** 第 i 个代号：0 → 同学A，25 → 同学Z，26 → 同学AA */
-export function aliasOf(i) {
-  const n = Math.max(0, i | 0);
-  if (n < 26) return '同学' + LETTERS[n];
-  return '同学' + LETTERS[Math.floor(n / 26) - 1] + LETTERS[n % 26];
+/** 默认随机源：优先 CSPRNG，老环境 / 测试垫片降级 Math.random */
+function defaultRnd() {
+  const c = typeof globalThis !== 'undefined' ? globalThis.crypto : null;
+  if (c && typeof c.getRandomValues === 'function') {
+    const a = new Uint32Array(1);
+    c.getRandomValues(a);
+    return a[0] / 4294967296;
+  }
+  return Math.random();
+}
+
+/** 生成一个代号，如「同学K7X」 */
+export function randAlias(rnd = defaultRnd) {
+  let s = '';
+  for (let i = 0; i < CODE_LEN; i++) s += CODE_CHARS[Math.floor(rnd() * CODE_CHARS.length) % CODE_CHARS.length];
+  return '同学' + s;
 }
 
 /**
- * 生成一次性代号映射：Map<studentId, 代号>
- * 🔴 只在内存中存在，调用方负责「用完即弃」——不写库、不写任何本地存储、不复制到剪贴板。
+ * 抽 n 个互不重复、且不与 exclude 冲突的代号。
+ * @param {number} n
+ * @param {function} rnd 随机源（返回 [0,1)）；测试可注入确定性序列
+ * @param {Iterable<string>} exclude 已占用的代号
  */
-export function buildAliasMap(students) {
+export function pickAliases(n, rnd = defaultRnd, exclude) {
+  const taken = new Set(exclude || []);
+  const out = [];
+  const cap = n * 500 + 2000;                    // 防御：万一池被占满也不死循环
+  for (let g = 0; out.length < n && g < cap; g++) {
+    const a = randAlias(rnd);
+    if (taken.has(a)) continue;
+    taken.add(a); out.push(a);
+  }
+  return out;
+}
+
+/**
+ * 一次性代号映射：Map<studentId, 代号>
+ * 🔴 本函数是纯函数（只算不存）——是否落盘由调用方决定（见 analysis.js 的会话存储）。
+ * 🔴 o.keep：本次「使用周期」内已发过的代号，原样沿用。
+ *    这是「回填能对上」的前提 —— 从生成到回填成功之前，同一个学生必须是同一个代号。
+ *    映射里**只有 id 与代号，不含真实姓名**：真名由调用方按 id 现查，落盘也无泄露价值。
+ */
+export function buildAliasMap(students, o = {}) {
+  const ss = students || [];
   const m = new Map();
-  (students || []).forEach((s, i) => m.set(s.id, aliasOf(i)));
+  const used = new Set();
+  const keep = o.keep instanceof Map ? o.keep : null;
+  if (keep) {
+    for (const s of ss) {
+      const a = keep.get(s.id);
+      if (a && !used.has(a)) { m.set(s.id, a); used.add(a); }
+    }
+  }
+  const need = ss.filter(s => !m.has(s.id));
+  if (need.length) {
+    const fresh = pickAliases(need.length, o.rnd, used);
+    need.forEach((s, i) => { m.set(s.id, fresh[i]); });
+  }
   return m;
 }
 
@@ -110,8 +161,10 @@ export function buildScrubbedText(students, recs, o = {}) {
   const hits = { name: 0, score: 0, rank: 0, date: 0 };
   const L = [];
   L.push('【学生成长记录 · 已脱敏素材】');
-  L.push('说明：以下姓名为一次性代号，仅在本次使用内有效，与本班真实姓名无任何对应关系；');
-  L.push('      分数、名次、具体日期与他人姓名均已隐去；不含任何照片。');
+  L.push('说明：以下姓名为一次性随机代号，仅在本次使用内有效，与本班真实姓名无任何对应关系；');
+  // 🔴 不在这里列举「分数 / 名次」：记录端（record.js 的 RULE_TIP）已要求不写，
+  //    外发说明再提反而暗示这些数据存在。日期按 grain 如实说明（选「保留完整」时不能写「已隐去」）。
+  L.push(`      ${grain === 'full' ? '具体日期按老师设置保留' : '具体日期已粗化到月'}，他人姓名均已隐去；不含任何照片。`);
   L.push(`本次覆盖：${students.length} 名学生 · ${recs.length} 条记录`);
   L.push('='.repeat(28));
 

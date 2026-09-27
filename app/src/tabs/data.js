@@ -22,7 +22,7 @@ import { download, blobToDataURL } from '../util.js';
 import { flushDraft } from './record.js';
 
 const SCHEMA_VERSION = 7;                 // 当前 schema 版本（V11.13：templates 移除 / images 去 del / 记录增复合索引）
-const APP_VER = 'v1.7.2';                 // 🔴 产品版本号（对外）：语义化递增，与 main.js 的 APP_VER 保持一致
+const APP_VER = 'v1.7.3';                 // 🔴 产品版本号（对外）：语义化递增，与 main.js 的 APP_VER 保持一致
 const PLAN_VER = 'V11.13';                // 🔴 方案版本号（内部，仅设置页可见）：与 dev/docs 里配对的方案文件同步，改功能才顺延
 
 // 🔴 存储口径三处统一：一个函数、不写死（§4.8.18 ①-4）
@@ -904,7 +904,7 @@ export async function openSettings() {
       </div>
       <div class="set-item">
         <div class="kv" style="border:none;padding:0 0 6px"><span>会离开本设备的</span><b>只有你自己复制的 AI 素材</b></div>
-        <div class="save-note" style="border:none">数据只存在这台设备，应用不联网、不上传。<b>AI 评语素材</b>是唯一外发口：姓名换代号召，分数、名次、日期、他人姓名隐去，照片不参与。</div>
+        <div class="save-note" style="border:none">数据只存在这台设备，应用不联网、不上传。<b>AI 评语素材</b>是唯一外发口：姓名换成一次性代号，其他同学用泛称，照片不参与。</div>
       </div>
       <div class="save-note">未满 14 周岁的信息属《个人信息保护法》第 28 条<b>敏感个人信息</b>，教师不能代替学生对外授权；是否外发由你按学校要求判断。</div>
 
