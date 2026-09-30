@@ -108,6 +108,8 @@ mark{background:#ffeab0;color:inherit;border-radius:3px;padding:0 1px}
   font-size:var(--fs-base);background:#fff;color:var(--txt);box-sizing:border-box;cursor:pointer}
 textarea{width:100%;border:1px solid var(--line);border-radius:var(--r-s);padding:10px;font:inherit;resize:vertical}
 .ta{width:100%;border:1px solid var(--line);border-radius:8px;padding:10px;font:inherit;font-size:13px;box-sizing:border-box}
+/* 只读展示块（首装向导里的「本学期」）：虚线边 + 浅底 ⇒ 一眼看出「这是算出来的，不是让你输的」 */
+.ta.ro{background:#f4f6f4;color:var(--txt2);border-style:dashed;line-height:1.45}
 .row{display:flex;gap:10px;align-items:center}
 .mt{margin-top:14px}
 

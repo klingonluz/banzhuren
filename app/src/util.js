@@ -13,6 +13,22 @@ export function stamp(ts) {
     + '_' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
 }
 
+// 本地日期 → `<input type="date">` 认的 'YYYY-MM-DD'
+// 🔴 一律按**本地时区**算：`toISOString()` 是 UTC，东八区早 8 点前会取成昨天
+//    （真机表现 =「日期莫名其妙变成前一天」）。全项目这一处转换，别各写一份。
+export function dateStr(d = new Date()) {
+  const x = d instanceof Date ? d : new Date(d);
+  return x.getFullYear() + '-' + pad(x.getMonth() + 1) + '-' + pad(x.getDate());
+}
+
+// 'YYYY-MM-DD' → Date：刻意取**本地正午**。
+// 🔴 别用 `Date.parse('2026-08-01')`：那按 UTC 解析，东八区 0–8 点会算成前一天，
+//    8/1 边界当场测歪；也别取零点 —— 夏令时会把某些日期挤到前后一天。
+//    这里只要「哪一天」，不要那一刻。非法输入返回 Invalid Date，由调用方判。
+export function dateOfStr(s) {
+  return new Date(String(s || '') + 'T12:00:00');
+}
+
 // 触发一次文件下载（Blob → <a download> 点击 → 回收 blob URL）
 export function download(filename, text, mime = 'application/json') {
   const blob = new Blob([text], { type: mime + ';charset=utf-8' });
@@ -109,7 +125,10 @@ function curStartYear(d = new Date()) {
 // ❌ 不要用「当前学期的下一个」当默认：老师大多数时候要建的就是**眼下这个学期**，
 //    尤其刚换手机 / 换网址、本机一个学期都没有时，按日期推才是他要的那个。
 export function curSemName(d = new Date()) {
-  return semNameOf(curStartYear(d), d.getMonth() >= 7 ? 1 : 2);
+  const y = curStartYear(d);
+  // 起始学年 == 当年 ⇒ 已过 8/1 ⇒ 第一学期；否则（起始学年是去年）⇒ 第二学期。
+  // 刻意不再比一次 getMonth()：判据全部由 curStartYear() 给出，8/1 边界真的只有一处。
+  return semNameOf(y, y === d.getFullYear() ? 1 : 2);
 }
 
 // 顺延到下一个学期：第一 → 第二；第二 → 下一学年第一

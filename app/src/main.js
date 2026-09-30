@@ -4,10 +4,11 @@ import {
   state, ensureCurrentSemester, loadSettings, setSemester, refresh, applyFontSize, onChange, teacherInitial,
   readPersisted, captureInstallPrompt
 } from './state.js';
-import { getSetting, setSetting, meta, listSemesters } from './db/meta.js';
+import { getSetting, setSetting, meta, listSemesters, putSemester } from './db/meta.js';
 import { openSemester, listStudents, bulkPutStudents } from './db/semester.js';
 import { nameInitials } from './pinyin.js';
-import { el, esc, toast, banner, openPicker, confirmAsync, askText } from './ui.js';
+import { curSemName, normSemName, dateStr, dateOfStr } from './util.js';
+import { el, esc, toast, banner, openPicker, confirmAsync, askText, afterBack } from './ui.js';
 import { mount as mountRecord } from './tabs/record.js';
 import { mount as mountClass } from './tabs/class.js';
 import { mount as mountAnalysis } from './tabs/analysis.js';
@@ -27,7 +28,7 @@ let activeTab = 'record';
 // 🔴 产品版本号（对外：页脚展示 + 更新 UI）。语义化：修 bug 升末位（v1.0.1）、
 //    加功能升中位（v1.1.0）、数据结构不兼容升首位（v2.0.0）。首个公开发布 = v1.0.0。
 //    注意：内部还有一套「方案文档版本号」（如 V11.10），只用于设计记录，不对外，见 tabs/data.js 的 PLAN_VER。
-const APP_VER = 'v1.8.0';
+const APP_VER = 'v1.8.1';
 // 🔴 部署网址锚点（换网址风险防护，§13.7.1）：留空 = 首次启动自动记录当前 origin 并比对；
 //    上线固定域名后建议填死，例如 'https://banzhuren.example.com'，网址变化即弹告警提醒导入备份。
 const EXPECTED_ORIGIN = '';
@@ -192,7 +193,10 @@ function wizardStep(opts) {
   let settled = false, finish;
   const done = new Promise(res => { finish = res; });
   const ui = openPicker({ ...opts, onClose: () => { if (!settled) { settled = true; finish(false); } } });
-  const next = () => { if (!settled) { settled = true; ui.close(); finish(true); } };
+  // 🔴 「下一步」= 关掉这一步 + **紧接着**开下一步 ⇒ 必须走 afterBack：
+  //    close() 里的 history.back() 是异步的，那个迟到的 popstate 会把**刚开的下一步**当栈顶弹掉，
+  //    真机上表现就是「点了下一步没反应」（2026-09-30 无头探针实测抓到；同因见 data.js / class.js 各处）。
+  const next = () => { if (!settled) { settled = true; ui.close(); afterBack(() => finish(true)); } };
   return { ui, done, next };
 }
 
@@ -201,16 +205,27 @@ async function maybeOnboard() {
   const students = await listStudents(state.db, { includeOut: true });
   if (students.length) { await setSetting('onboarded', true); return; }
 
+  // 🔴 学期**不给输入框**，也**不直接读本地时间** —— 它由上面的「起始日期」推出来：
+  //    老师把日期改到哪个学期，上面那行就跟着变（8/1 分界只在 util.js::curStartYear() 算一处）。
+  //    ❌ 不让老师手输名字：那等于给了他一个造出「同名重复学期 / 与当时不一致学期」的入口
+  //       （同义学期两种叫法，导入时认不出来 ⇒ 列表里堆两个学期，哪份数据属于谁看不出）。
+  // 🔴 起始日期默认值必须按**本地**日期取（util.js::dateStr()，不是 UTC 的 toISOString）。
+  const dftDate = dateStr();
   const s1 = wizardStep({
     title: '① 基本设置',
     body: `<div style="padding:16px">
       <div class="field"><label>教师姓名</label><input class="ta" id="ob-tname" value="${esc(state.settings.teacherName || '')}" placeholder="如：李老师 / 李明"></div>
-      <div class="field"><label>学期名称</label><input class="ta" id="ob-name" value="${esc(state.semester?.name || '')}"></div>
-      <div class="field"><label>起始日期</label><input class="ta" type="date" id="ob-start" value="${new Date().toISOString().slice(0, 10)}"></div>
-      <div class="save-note">教师姓名用于顶栏头像与备份设备名，稍后可在「设置」改。</div>
+      <div class="field"><label>起始日期</label><input class="ta" type="date" id="ob-start" value="${dftDate}"></div>
+      <div class="field"><label>本学期</label><div class="ta ro" id="ob-sem">${esc(curSemName(dateOfStr(dftDate)))}</div></div>
+      <div class="save-note">学期跟着上面的起始日期走（8 月 1 日起算新学年）：本机已有这个学期就直接用它，不会重复新建。起始日期同时用于课表周次；教师姓名用于顶栏头像与备份设备名，稍后可在「设置」改。</div>
     </div>`,
     foot: `<button class="btn" id="ob-1">下一步</button>`
   });
+  const obStart = s1.ui.body.querySelector('#ob-start');
+  const obSem = s1.ui.body.querySelector('#ob-sem');
+  // 选了哪一天就落哪个学期 ⇒ 两行永远说的是同一个学期，不会出现「日期 3 月、学期还是第一学期」的自相矛盾
+  const obDate = () => { const x = dateOfStr(obStart.value); return isNaN(x.getTime()) ? new Date() : x; };
+  obStart.oninput = obStart.onchange = () => { obSem.textContent = curSemName(obDate()); };
   s1.ui.foot.querySelector('#ob-1').onclick = async () => {
     const tname = (s1.ui.body.querySelector('#ob-tname').value || '').trim();
     if (tname) {
@@ -219,11 +234,25 @@ async function maybeOnboard() {
       const av = document.getElementById('sem-avatar');
       if (av) { av.textContent = teacherInitial() || AVATAR_EMPTY; av.title = avatarTitle(); }
     }
-    const name = s1.ui.body.querySelector('#ob-name').value.trim() || state.semester?.name;
-    const start = s1.ui.body.querySelector('#ob-start').value;
-    const sem = { ...state.semester, name, startAt: start ? new Date(start).getTime() : Date.now() };
-    await meta.semesters.put(sem); state.semester = sem;
-    const n = document.getElementById('sem-name'); if (n) n.textContent = name;
+    // 🔴 学期由上面选的日期决定。规则一句：**同名即同一学期** —— 本机已有就切过去用它，
+    //    绝不新建第二个（老师 2026-09-30 提出的隐患）。
+    // 🔴 这里也**不写回 status**：启动时已有一个 active 学期，再写一次会造出两个 active。
+    const d = obDate(), at = d.getTime(), target = curSemName(d), cur = state.semester;
+    const same = (await listSemesters()).find(x => normSemName(x.name) === normSemName(target));
+    if (same && same.id === cur.id) {
+      // 选的就是当前学期（默认情形）⇒ 只把起始日期对齐
+      if (cur.startAt !== at) { const sem = { ...cur, startAt: at }; await putSemester(sem); state.semester = sem; }
+    } else if (same) {
+      // 本机早就有这个学期（换手机 / 以前建过）⇒ 认它，只把起始日期对齐
+      await switchSemester({ ...same, startAt: at });
+    } else {
+      // 本机没有 ⇒ 当前这个学期是**启动时按「今天」先猜出来的空学期**（maybeOnboard 开头就把
+      //   「有学生」的情况挡掉了 ⇒ 此刻它一个学生都没有），直接把它改名成老师选的这个：
+      //   id 不变 ⇒ 不新建、不删除，学期列表里也不会平白多出一个空学期。
+      const sem = { ...cur, name: target, startAt: at };
+      await putSemester(sem); state.semester = sem;
+      const nEl = document.getElementById('sem-name'); if (nEl) nEl.textContent = target;
+    }
     s1.next();
   };
   if (!await s1.done) return;

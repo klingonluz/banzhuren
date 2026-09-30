@@ -2,6 +2,7 @@
 import { meta, getSetting, setSetting, listSemesters, ensureSemester, openMeta } from './db/meta.js';
 import { openSemester, ensureOpen, backfillPinyin } from './db/semester.js';
 import { seedTaxonomy, seedBaseline } from './db/seed.js';
+import { curSemName, semStartYear } from './util.js';
 
 export const state = {
   currentSemesterId: null,
@@ -106,11 +107,14 @@ export async function ensureCurrentSemester() {
   if (!sem) sem = sems.find(s => s.status === 'active');
   if (!sem) sem = sems[0];
   if (!sem) {
-    const now = new Date();
-    const y = now.getFullYear();
+    // 🔴 只有**完全空库**才会走到这里 ⇒ 这里建的学期由日期唯一决定，永远不会与已有学期重名。
+    //    名字与 id 都从 util.js::curSemName() 派生（8/1 边界只在 util 算一处），
+    //    保证与「新建学期」的默认值、以及首装向导里展示的那个名字**必然一致**。
+    const name = curSemName();
+    const y = semStartYear(name) || new Date().getFullYear();
     sem = {
-      id: 'sem_' + y + '_' + (now.getMonth() >= 7 ? '1' : '2'),
-      name: `${y}-${y + 1} 学年 ${now.getMonth() >= 7 ? '第一' : '第二'}学期`,
+      id: `sem_${y}_${/第二学期/.test(name) ? 2 : 1}`,
+      name,
       startAt: Date.now(), status: 'active'
     };
     await ensureSemester(sem);
