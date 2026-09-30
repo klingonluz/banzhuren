@@ -2,6 +2,7 @@
 // V11.1 数据层：图片移入学期库；新增 categories / collections；tasks → collections
 const Dexie = window.Dexie;
 import { classifyDbError, DB_ERR_CORRUPT, DbOpenError, migrateQuietly } from './migrate.js';
+import { sameRecord } from '../util.js';
 
 const cache = new Map();
 
@@ -259,4 +260,87 @@ export async function getSchedule(db) {
 }
 export async function saveSchedule(db, data) {
   await db.schedule.put({ id: 'current', ...data });
+}
+
+/* ---------- 整学期还原 / 从快照捞回（导入侧） ---------- */
+// 🔴 两种输入共用一个写入函数：
+//    · pack（备份文件 / 归档包）：images 形如 [{ imageId, data: dataURL }]
+//    · stores（本机快照 dump）：images 是 [{ imageId, blob }] 原始行 —— 直存 Blob，不过一遍 base64
+//    ⚠️ 清空与灌入放**同一个事务**：否则「记录灌了、图没灌」会留下半新状态，
+//       而事务里只做同步转换（dataURLToBlob 是 atob + Uint8Array，不碰异步 IO）。
+async function writeSemester(db, data) {
+  const imgBad = [];
+  await db.transaction('rw', db.students, db.growth_records, db.images, db.categories, db.tags, db.schedule, async () => {
+    await db.students.clear();
+    await db.growth_records.clear();
+    await db.images.clear();
+    await db.categories.clear();
+    await db.tags.clear();
+    await db.schedule.clear();
+    if ((data.students || []).length) await db.students.bulkPut(data.students);
+    if ((data.records || []).length) await db.growth_records.bulkPut(data.records);
+    if ((data.categories || []).length) await db.categories.bulkPut(data.categories);
+    if ((data.tags || []).length) await db.tags.bulkPut(data.tags);
+    const sched = Array.isArray(data.schedule) ? data.schedule[0] : data.schedule;
+    if (sched) await db.schedule.put({ id: 'current', ...sched });
+    for (const im of (data.images || [])) {
+      try {
+        if (!im || !im.imageId) continue;
+        if (im.blob) await db.images.put({ imageId: im.imageId, blob: im.blob, updatedAt: im.updatedAt || Date.now() });
+        else if (im.data) await db.images.put({ imageId: im.imageId, blob: dataURLToBlob(im.data), updatedAt: Date.now() });
+        else imgBad.push(im.imageId);                 // 导出那一端就没带上这张图
+      } catch (_) { imgBad.push(im && im.imageId); }
+    }
+  });
+  return { imgBad };
+}
+
+// 用一份备份包**整体替换**本学期的全部数据（先清后灌）。
+// 🔴 调用方必须先 snapshotSemester() 存好「导入前快照」—— 这是唯一的退路。
+export async function restoreSemesterFromPack(db, pack) {
+  return writeSemester(db, pack);
+}
+// 用一份本机快照的 dump 整体替换（= 撤销到这一刻）
+export async function restoreSemesterFromStores(db, stores) {
+  return writeSemester(db, {
+    students: stores.students, records: stores.growth_records,
+    categories: stores.categories, tags: stores.tags,
+    schedule: stores.schedule, images: stores.images
+  });
+}
+
+// 「这条记录本机缺不缺」的比对：按 studentId 取回本机记录，再逐条比**内容**
+// 🔴 只按 id 判会**静默丢掉"同一条被改过"的更新**（真实的丢数据），所以 changed 单独成档。
+export async function diffRecordsOfStudent(db, studentId, recs) {
+  const local = await db.growth_records.where('studentId').equals(studentId).toArray();
+  const lm = new Map(local.map(r => [r.id, r]));
+  const added = [], changed = [];
+  let sameN = 0;
+  for (const r of (recs || [])) {
+    const l = lm.get(r.id);
+    if (!l) added.push(r);
+    else if (!sameRecord(l, r)) changed.push(r);
+    else sameN++;
+  }
+  return { added, changed, sameN };
+}
+
+// 从快照「捞回」：**只补不删**（本机独有的东西一个都不动）
+// plan = { students: [...新增的人], records: [...要补/覆盖的记录], images: [...被选中记录引用到的图] }
+export async function mergeStudentsFromPack(db, plan) {
+  const imgBad = [];
+  const stu = plan.students || [], recs = plan.records || [], imgs = plan.images || [];
+  await db.transaction('rw', db.students, db.growth_records, db.images, async () => {
+    if (stu.length) await db.students.bulkPut(stu);
+    if (recs.length) await db.growth_records.bulkPut(recs);
+    for (const im of imgs) {
+      try {
+        if (!im || !im.imageId) continue;
+        if (im.blob) await db.images.put({ imageId: im.imageId, blob: im.blob, updatedAt: im.updatedAt || Date.now() });
+        else if (im.data) await db.images.put({ imageId: im.imageId, blob: dataURLToBlob(im.data), updatedAt: Date.now() });
+        else imgBad.push(im.imageId);
+      } catch (_) { imgBad.push(im && im.imageId); }
+    }
+  });
+  return { stuN: stu.length, recN: recs.length, imgN: imgs.length - imgBad.length, imgBad };
 }

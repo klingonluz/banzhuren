@@ -3,8 +3,10 @@
 // 课表模型：本班课表 homeroom（班主任只负责一个班，单一固定，无班级选择）+ 我的课表 mine（跨班自填，每格 {subject,cls}）+ 授课班级 teachClasses（跨班任教）+ 自定义科目 customSubjects
 import { state } from '../state.js';
 import { listStudents, listCollections, putCollection, deleteCollection, getSchedule, saveSchedule } from '../db/semester.js';
-import { esc, toast, openPicker, emptyState, confirm, onSeg, filterStudents } from '../ui.js';
+import { esc, toast, openPicker, emptyState, confirm, onSeg, filterStudents, afterBack } from '../ui.js';
 import { pad } from '../util.js';
+import { exportPeriods } from '../export.js';
+import { openPeriodsImport } from './data.js';
 
 const DAYS = ['周一', '周二', '周三', '周四', '周五'];
 const SUBJECTS = ['语文', '数学', '英语', '科学', '体育', '音乐', '美术', '信息', '劳动', '阅读', '班会', '自习', ''];
@@ -202,7 +204,12 @@ function scheduleCard(sched) {
     ${schedMode === 'mine' ? `<button class="btn ghost mt" id="cl-classes">🏫 授课班级（跨班）</button>` : ''}
     <button class="btn ghost mt" id="cl-week">查看 / 编辑${schedMode === 'mine' ? '我的课表' : '本班课表'}</button>
     <button class="btn ghost mt" id="cl-sched">作息时间表（可编辑）</button>
+    <div class="sched-io">
+      <button class="btn ghost tiny" id="cl-sched-exp">⏰ 导出作息</button>
+      <button class="btn ghost tiny" id="cl-sched-imp">⏰ 导入作息</button>
+    </div>
     <div class="save-note">切换夏/冬作息，<strong>课程不变、时间自动跟随</strong>。本班课表 = 你当班主任的那个班（固定）；「我的课表」是<b>空表</b>，自己填科目与班级。</div>
+    <div class="save-note">作息一学期基本不变：<b>导出作息</b>留一份，新学期新库点<b>导入作息</b>即可搬过去，不用连名单记录一起导。</div>
   </div>`;
 }
 
@@ -821,7 +828,9 @@ function openNewColl(db, colls, rerender) {
     const coll = { id: 'cl' + Date.now().toString(36), name, paidIds: [], updatedAt: Date.now() };
     await putCollection(db, coll);
     colls.unshift(coll);
-    p.close(); toast('已创建'); rerender(); openRoll(coll, db, rerender);
+    // 🔴 关掉新建弹层后紧接着开点名弹层 ⇒ 必须 afterBack，否则迟到的 popstate 会把点名页打回
+    p.close(); toast('已创建'); rerender();
+    afterBack(() => openRoll(coll, db, rerender));
   };
 }
 
@@ -921,6 +930,11 @@ export async function mount(scrollEl) {
       else openWeek(db, sched, render);
     };
     scrollEl.querySelector('#cl-sched').onclick = () => openSched(db, sched, render);
+    // 作息单独导出 / 导入（🔴 与「整学期备份」是两条通道：这里只带作息，不碰名单记录图片）
+    const expB = scrollEl.querySelector('#cl-sched-exp');
+    if (expB) expB.onclick = () => exportPeriods();
+    const impB = scrollEl.querySelector('#cl-sched-imp');
+    if (impB) impB.onclick = () => openPeriodsImport();
     scrollEl.querySelector('#cl-new').onclick = () => openNewColl(db, colls, render);
     scrollEl.querySelector('#cl-colls').onclick = async e => {
       const del = e.target.closest('[data-delcoll]');

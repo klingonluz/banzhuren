@@ -179,11 +179,14 @@ export function buildArchiveHTML(pack) {
   ].join('');
 }
 
-/** 归档文件名（唯一命名规则）：班主任工作台_<学期名>_归档_<YYYYMMDD>.<ext> */
+/** 归档文件名（唯一命名规则）：班主任工作台_<学期名>_归档_<YYYY-MM-DD_HHmmss>.<ext> */
+// 🔴 带上时分秒：同一天归档两次（或先归档再补一份）不会重名，也不会被浏览器存成「xxx (1).json」。
+//    格式与 src/util.js 的 stamp() 一致（本文件刻意零依赖，故这里自己拼）。
 export function archiveFileName(semesterName, ext, ts) {
   const d = new Date(ts || Date.now());
-  const stamp = d.getFullYear() + p2(d.getMonth() + 1) + p2(d.getDate());
-  return '班主任工作台_' + (semesterName || '学期') + '_归档_' + stamp + '.' + ext;
+  const day = d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate());
+  const hms = p2(d.getHours()) + p2(d.getMinutes()) + p2(d.getSeconds());
+  return '班主任工作台_' + (semesterName || '学期') + '_归档_' + day + '_' + hms + '.' + ext;
 }
 
 export { bytes as fmtBytes };

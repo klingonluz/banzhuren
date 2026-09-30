@@ -63,8 +63,23 @@ export async function getSemester(id) {
 export async function putSemester(sem) {
   await meta.semesters.put(sem);
 }
-export async function ensureSemester(sem) {
+// 写入学期行：默认**只补缺** —— 已存在的行一个字都不改（避免覆盖老师正在用的状态）。
+// 🔴 opts.status 传入时**强制回写**该字段。导入必须用上：
+//    本机那个学期若曾是 `cleared`（副本被清过），导入后数据确实写进了 bzr_<id>，
+//    但切换器会过滤掉 cleared、学期管理页也会拦截点击 ⇒ **老师根本进不去那个学期**，
+//    表现就是「导入完什么都没有」。所以导入收尾必须把它改写成 'inactive'。
+export async function ensureSemester(sem, opts = {}) {
   const exists = await meta.semesters.get(sem.id);
-  if (!exists) await meta.semesters.put(sem);
+  if (!exists) { await meta.semesters.put(sem); return sem; }
+  if (opts.status && exists.status !== opts.status) {
+    await meta.semesters.put({ ...exists, status: opts.status });
+  }
   return sem;
+}
+
+// 删除学期行（**只删 meta 里这一行**，不碰学期库 —— 删库由 db/semester.js::deleteSemester 负责）
+// 🔴 这里刻意用 Dexie 的**集合**删除（meta.semesters.delete），不碰 `Dexie` 的**静态**删除方法：
+//    check19 守着「meta.js 里不出现静态删库调用」（= 打开失败绝不删库），别破坏那条契约。
+export async function removeSemester(id) {
+  await meta.semesters.delete(id);
 }

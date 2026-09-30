@@ -7,7 +7,7 @@ import {
 import { getSetting, setSetting, meta, listSemesters } from './db/meta.js';
 import { openSemester, listStudents, bulkPutStudents } from './db/semester.js';
 import { nameInitials } from './pinyin.js';
-import { el, esc, toast, banner, openPicker } from './ui.js';
+import { el, esc, toast, banner, openPicker, confirmAsync, askText } from './ui.js';
 import { mount as mountRecord } from './tabs/record.js';
 import { mount as mountClass } from './tabs/class.js';
 import { mount as mountAnalysis } from './tabs/analysis.js';
@@ -27,7 +27,7 @@ let activeTab = 'record';
 // 🔴 产品版本号（对外：页脚展示 + 更新 UI）。语义化：修 bug 升末位（v1.0.1）、
 //    加功能升中位（v1.1.0）、数据结构不兼容升首位（v2.0.0）。首个公开发布 = v1.0.0。
 //    注意：内部还有一套「方案文档版本号」（如 V11.10），只用于设计记录，不对外，见 tabs/data.js 的 PLAN_VER。
-const APP_VER = 'v1.7.3';
+const APP_VER = 'v1.8.0';
 // 🔴 部署网址锚点（换网址风险防护，§13.7.1）：留空 = 首次启动自动记录当前 origin 并比对；
 //    上线固定域名后建议填死，例如 'https://banzhuren.example.com'，网址变化即弹告警提醒导入备份。
 const EXPECTED_ORIGIN = '';
@@ -311,15 +311,23 @@ function renderBootError(app, e) {
 }
 
 // 🔴 全机唯一的删库入口：必须「显式点击 + 二次确认（确认框 + 手动输入）」——不能一点就没
+//    ⚠️ 全程用自定义弹层，**不用 window.confirm / prompt / alert**：
+//    预览面板（sandboxed iframe）会把它们静默拦掉（返回 false / null）⇒ 老师点了像没反应，反倒以为应用坏了。
 async function hardReset() {
-  if (!confirm('清空本机数据会删除全部学生与成长记录，且无法恢复。\n\n请先确认：已导出备份，或用「数据导出页」把数据存成文件。\n\n仍要清空吗？')) return;
-  const typed = prompt('这是最后一步：请输入「清空」两个字确认。');
-  if (((typed || '').trim()) !== '清空') { alert('输入不匹配，已取消。'); return; }
+  const ok = await confirmAsync({
+    title: '清空本机数据', danger: true, okText: '继续',
+    msg: '会删除全部学生与成长记录，且无法恢复。\n\n请先确认：已导出备份，或用「数据导出页」把数据存成文件。'
+  });
+  if (!ok) return;
+  const typed = await askText({
+    title: '最后一步', label: '请输入「清空」两个字确认', placeholder: '清空', okText: '确认清空'
+  });
+  if ((typed || '') !== '清空') { toast('输入不匹配，已取消。'); return; }
   try {
     const DX = window.Dexie;
     for (const n of await appDbNames()) { try { await DX.delete(n); } catch (_) {} }
     location.reload();
-  } catch (err) { alert('清空失败：' + ((err && err.message) || err)); }
+  } catch (err) { toast('清空失败：' + ((err && err.message) || err)); }
 }
 // 🔴 库名必须枚举全：只删 bzr_meta 会把学期库留成「看不见但占空间」的孤儿库
 //    （meta 打不开时 listSemesters 读不到学期 id，所以再补一层浏览器自己的库列表）
@@ -377,7 +385,7 @@ async function boot() {
       const re = rescueError();
       if (re) banner('rescueBrokenBanner', `⚠️ 本机自动备份暂时不可用（${esc(re.name || '存储异常')}），<b>请到「数据 → 备份与恢复」手动导出</b>一份。`, 'warn');
     } catch (_) {}
-    // 🔴 v1.5.0：原「定时 + 切回前台自动快照」已删除（理由见 tabs/data.js 的 rescueCard 上方注释）。
+    // 🔴 v1.5.0：原「定时 + 切回前台自动快照」已删除（理由见 tabs/data.js 的 snapCard 上方注释）。
     //    编辑中途被打断由记录页草稿机制兜底（localStorage，输入即存），比快照及时得多。
   } catch (e) {
     // 🔴 启动失败兜底页（绝白屏）：按故障类型给不同出口，**绝不自动清空数据**（§13.25）

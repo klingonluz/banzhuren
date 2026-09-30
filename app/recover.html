@@ -164,7 +164,9 @@
 
   function stamp() {
     var d = new Date(), p = function (n) { return (n < 10 ? '0' : '') + n; };
-    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + '_' + p(d.getHours()) + p(d.getMinutes());
+    // 带上秒：同一分钟内导两次（或先导全机再导单库）不会重名、不会被浏览器存成「xxx (1).json」
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + '_'
+      + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
   }
 
   function stem(name) {

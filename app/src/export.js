@@ -1,12 +1,13 @@
 // 成长记录文本（实名 · 只留你自己设备上）：拼装 + 导出面板
 // 🔴 V11.11 起从「分析」页迁到「数据」页，与「备份与恢复」并列 —— 两者不重复：
-//    备份 = 全量 JSON（含图片二进制，可再导入、逐条裁决恢复）；本文件 = 纯文本成长记录（给人看 / 打印 / 给家长）。
+//    备份 = 全量 JSON（含图片二进制，可再整体还原；替换本机同学期前会自动存一份「导入前快照」）；
+//    本文件 = 纯文本成长记录（给人看 / 打印 / 给家长）。
 // 分析页的「AI 评语素材」复用这里的 tagText，保证两条通道措辞一致（关注类一律写成可努力的方向）。
-import { state } from './state.js';
-import { listStudents } from './db/semester.js';
+import { state, effectiveDeviceName } from './state.js';
+import { listStudents, getSchedule } from './db/semester.js';
 import { GUANZHU } from './db/seed.js';
 import { esc, toast, openPicker, onSeg, scopeBlockHTML, bindScopeBlock } from './ui.js';
-import { download } from './util.js';
+import { download, stamp } from './util.js';
 
 // 🔴 关注类标签 → 鼓励版措辞（导出与 AI 素材都用它，不给孩子贴负面标签）
 export const ENCOURAGE = {
@@ -131,7 +132,36 @@ ${scopeBlockHTML('ex')}
     }
   };
   p.foot.querySelector('#ex-down').onclick = () => {
-    download(`成长记录_${state.semester?.name || '本学期'}.txt`, text, 'text/plain');
+    download(`成长记录_${state.semester?.name || '本学期'}_${stamp()}.txt`, text, 'text/plain');
     toast('已下载');
   };
+}
+
+/* ---------- ③ 作息时间表：单独导出 / 导入（不搬整学期） ---------- */
+// 🔴 为什么单独做一个文件：作息（几点上课、大课间多长）一学期基本不变，而新学期新库的作息是空的。
+//    老师只想把作息搬过去，不想把上学期整份数据（名单 / 记录 / 图片）灌进新库 —— 那会把新库污染成旧学期。
+//    所以这个文件**最小**：只有节次结构 + 夏冬两套时间，不含周课表、不含名单与记录。
+//    ⚠️ 周课表是按「节次下标」引用作息时间的（第 3 节排了什么课 = periods[2]）⇒ 作息单独换、周课表不换会错位。
+//       因此整学期还原时这两者总是一起走；只有老师明确「只要作息」时才用这里的单独通道。
+export async function buildPeriodsFile() {
+  const db = state.db;
+  const sched = (await getSchedule(db)) || {};
+  const periods = (sched.periods || []).map(p => ({
+    no: p.no || 0, name: p.name || '', type: p.type || 'class',
+    summer: p.summer || '', winter: p.winter || ''
+  }));
+  return {
+    app: '班主任工作台', kind: 'periods', exportedAt: Date.now(),
+    device: effectiveDeviceName(sched),                 // 与备份文件同源（本班班级 + 教师姓名派生）
+    semesterId: state.currentSemesterId,
+    semester: state.semester?.name || '',
+    periods
+  };
+}
+
+export async function exportPeriods() {
+  const file = await buildPeriodsFile();
+  if (!file.periods.length) { toast('本机还没有作息时间表'); return; }
+  download(`班主任工作台_作息_${state.semester?.name || '本学期'}_${stamp()}.json`, JSON.stringify(file));
+  toast(`已导出作息（${file.periods.length} 节）`);
 }

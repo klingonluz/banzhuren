@@ -3,6 +3,16 @@
 //    口径容易悄悄漂移（补零位数、下载的 charset、dataURL 失败处理），统一到这里。
 export const pad = n => String(n).padStart(2, '0');
 
+// 文件名时间戳（本地时区）：YYYY-MM-DD_HHmmss
+// 🔴 所有导出 / 下载的文件名都带上它 —— 同一天连导两次也不会重名，
+//    否则浏览器会静默存成「xxx (1).json」，老师回头看不知道哪份是哪份。
+//    与 app/recover.html 里的 stamp() 同格式（那个页面刻意零依赖，不能 import 本模块）。
+export function stamp(ts) {
+  const d = new Date(ts || Date.now());
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+    + '_' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+}
+
 // 触发一次文件下载（Blob → <a download> 点击 → 回收 blob URL）
 export function download(filename, text, mime = 'application/json') {
   const blob = new Blob([text], { type: mime + ';charset=utf-8' });
@@ -22,4 +32,112 @@ export function blobToDataURL(blob) {
     r.onerror = rej;
     r.readAsDataURL(blob);
   });
+}
+
+/* ---------- 导入文件分流 ---------- */
+// 🔴 按**内容**判定，不看文件名（老师会改名、也可能存成 .txt）：
+//    pack    = 整学期备份（有 records 数组）⇒ 走整学期还原
+//    periods = 作息小文件（kind:'periods' + periods 数组）⇒ 只写当前学期的作息，其余一点不动
+//    unknown = 不是本应用的文件（或结构不全）⇒ 明确报错，绝不动库
+export function kindOfFile(obj) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return 'unknown';
+  if (obj.app !== '班主任工作台') return 'unknown';
+  if (obj.kind === 'periods' && Array.isArray(obj.periods) && obj.periods.length) return 'periods';
+  if (Array.isArray(obj.records)) return 'pack';
+  return 'unknown';
+}
+
+// 两条记录「内容是否相同」—— 导入 / 捞回时判断"这一条到底缺不缺"
+// 🔴 必须比内容，不能只比 id：同一条记录两边都被改过时 id 相同、内容不同，
+//    只按 id 判会把它当"已存在"跳过 ⇒ **静默丢掉更新**（真实的丢数据）。
+//    del 参与比较（回收站里的软删记录原样带过来，不复活）；updatedAt 是易变字段，故意忽略。
+export function sameRecord(a, b) {
+  if (!a || !b) return false;
+  const norm = r => JSON.stringify([
+    r.studentId || '', r.date || '', r.category || '', r.text || '',
+    (r.tags || []).slice().sort(), (r.imageIds || []).slice().sort(),
+    (r.imgDescs || []).filter(Boolean), r.del ? 1 : 0
+  ]);
+  return norm(a) === norm(b);
+}
+
+/* ---------- 学期名归一化 ---------- */
+// 🔴 用途：导入时判断「本机已有的学期」和「备份里的学期」是不是**同一个**。
+//    换手机 / 换网址（origin 变了）后，学期库 id **一定不同**，只按 id 认就会
+//    把同一个学期当成新学期的 ⇒ 凭空多出一个学期，老师看到两份数据谁是谁都分不清。
+//    老师各自表述习惯也不同：「2026-2027学年第一学期」/「2026—2027 学年度 第1学期」
+//    /「2026~2027学年 第一学期」必须认成同一个。
+// ⚠️ 只抹**格式差异**，**不做跨表述的语义翻译**：
+//    「2026 春季学期」和「2026-2027 学年 第一学期」归一化后**故意不相等** ——
+//    春天到底是哪个学年，代码猜不出来，也不能猜；这种情况交给老师当面确认（见 data.js::openRestore）。
+export function normSemName(s) {
+  let t = String(s || '');
+  t = t.replace(/[\uFF01-\uFF5E]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0)); // 全角 → 半角
+  t = t.replace(/\s+/g, '');                                        // 去掉所有空白
+  t = t.replace(/[‐‑‒–—―ー~〜～~至]/g, '-');                          // 各种连字符 / 波浪 / 「至」
+  t = t.replace(/[()（）【】\[\]〔〕〈〉<>《》「」『』]/g, '');           // 括号一律去掉
+  t = t.replace(/学年度|学年|年度/g, '');                            // 「学年」可省略
+  t = t.replace(/第?([一二三四1-4])个?学期/g, (m, d) => 's' + ({ 一: 1, 二: 2, 三: 3, 四: 4 }[d] || d));
+  t = t.replace(/上学期/g, 's1').replace(/下学期/g, 's2');
+  t = t.replace(/学期/g, '');                                        // 落单的「学期」
+  t = t.replace(/-{2,}/g, '-').replace(/^-+|-+$/g, '');
+  return t.toLowerCase();
+}
+
+// 拼标准学期名：`2026-2027 学年 第一学期`（新建学期只用这一种格式，老师不再自由输入）
+export function semNameOf(startYear, term) {
+  const y = Number(startYear);
+  return `${y}-${y + 1} 学年 ${term === 2 ? '第二学期' : '第一学期'}`;
+}
+
+// 从学期名里解析出起始学年（认不出返回 null）。「2026-2027 学年 第一学期」→ 2026
+export function semStartYear(name) {
+  const t = String(name || '').replace(/[\uFF01-\uFF5E]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0));
+  const m = t.match(/(19|20)\d{2}/);
+  return m ? Number(m[0]) : null;
+}
+
+// 当前学年（起始年份）：以 **8 月 1 日**为界 —— 8 月及以后算新学年，7 月及以前还属上一学年。
+// 🔴 全项目只此一处算这个边界，别再各写一份（写岔了「默认学期」和「学年候选」会打架）。
+// ⚠️ `d` 只为测试 / 探针注入日期用（一年只有一次 8/1，不注入就没法验边界）；正常调用不传。
+function curStartYear(d = new Date()) {
+  return d.getMonth() >= 7 ? d.getFullYear() : d.getFullYear() - 1;
+}
+
+// 今天落在哪个学期 —— 新建学期的**默认值**就取它（老师 2026-09-29 拍板）。
+//   8/1 起 → 当年 … 次年 **第一学期**；8/1 前 → 上一年 … 当年 **第二学期**
+// ❌ 不要用「当前学期的下一个」当默认：老师大多数时候要建的就是**眼下这个学期**，
+//    尤其刚换手机 / 换网址、本机一个学期都没有时，按日期推才是他要的那个。
+export function curSemName(d = new Date()) {
+  return semNameOf(curStartYear(d), d.getMonth() >= 7 ? 1 : 2);
+}
+
+// 顺延到下一个学期：第一 → 第二；第二 → 下一学年第一
+// 归档之后自动建下一个学期时用它（旧版写死 '新学期'，会造出一堆同名学期）
+export function nextSemName(cur) {
+  const s = String(cur || '');
+  const y = semStartYear(s);
+  if (y && /第二学期/.test(s)) return semNameOf(y + 1, 1);
+  if (y && /第一学期/.test(s)) return semNameOf(y, 2);
+  // 认不出格式（老数据 / 老师自己起的名）⇒ 按当前日期推一个
+  return curSemName();
+}
+
+// 新建学期时可选的起始学年。规则就一句：
+//   **只列「本机有记录的学年」和「当前学年 / 下一个学年」** —— 每一项都派得上用场。
+//   ① 本机已有学期解析出的学年：有记录 ⇒ 以后可能还要建学期（拆班、换班），一律保留；
+//   ② 当前学年 base 与 base+1：以 8 月 1 日为界算学年 ⇒ base+1 就是「接下来的那个学年」，
+//      6 月（第二学期末）能提前建下学期所在的新学年；9 月一到 base 自己前进 ⇒ 窗口整体后移，
+//      **不需要任何人改代码**（这才是「后续年份」的正确写法）。
+// ❌ 刻意不往前铺固定年数：老师 2026 才开始用，2026 之前本机一条记录都没有，列出来是噪音。
+// ❌ 也不往后多铺几年：那不是「自动」，只是把事情推给以后的自己。
+// ⚠️ `d` 同 `curStartYear()`：只为测试 / 探针注入日期，正常调用不传。
+export function semYearOptions(curNames, d = new Date()) {
+  const set = new Set();
+  (curNames || []).forEach(n => { const y = semStartYear(n); if (y) set.add(y); });
+  const base = curStartYear(d);
+  set.add(base);
+  set.add(base + 1);
+  const out = [...set].filter(y => y >= 2000 && y <= 2100).sort((a, b) => b - a);
+  return out.length ? out : [base];   // 兜底：万一剩下的学年都不在合理区间，至少给当前学年
 }

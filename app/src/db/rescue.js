@@ -101,6 +101,44 @@ export async function pruneAuto(semesterId, keep = 3) {
   for (const d of drop) { try { await deleteSnap(d.key); } catch (_) {} }
 }
 
+/* ---------- 导入前快照（preimport） ---------- */
+// 🔴 与 v1.5.0 删掉的「每次打开都自动拍快照」有**本质区别**（不要改回去）：
+//    ① 一次性 —— 只在老师点下"用备份替换它"那一刻做一次；
+//    ② 有明确触发与理由 —— 马上要覆盖整个学期，必须有退路；
+//    ③ 不做就没兜底 —— 而"每次打开都拍"是给已经安全的数据再加一层，收益低却要读全表 + 每张图 base64。
+//    ⚠️ 存 **stores（原始行，图片直接存 Blob）**，不转成 base64 的 pack：同样能原样写回业务库，
+//       但体积小得多、也不用把每张图过一遍 FileReader。形态与 rescueFromCorrupt 的 dump 一致。
+export async function snapshotSemester(db, semesterId, semesterName, label = '导入前') {
+  const ts = Date.now();
+  const stores = {};
+  for (const [name, table] of [
+    ['students', db.students], ['growth_records', db.growth_records],
+    ['categories', db.categories], ['tags', db.tags],
+    ['schedule', db.schedule], ['images', db.images]
+  ]) {
+    try { stores[name] = await table.toArray(); } catch (_) { stores[name] = []; }
+  }
+  const rec = {
+    key: 'preimport:' + semesterId + ':' + ts,
+    type: 'preimport', semesterId, semesterName, device: label, exportedAt: ts, stores
+  };
+  return (await putSnap(rec)) ? rec.key : '';
+}
+
+// 通用滚动保留：按 key 前缀 `<type>:<semesterId>:` 只留最近 keep 份
+// 🔴 pruneAuto 原样保留（它只认 auto:，check10 有断言守着）；本函数用于 preimport / rescue。
+//    历史学期的快照不会因为"换了当前学期"就自动消失 —— 靠它兜住，否则会一直堆着占空间。
+export async function pruneSnaps(type, semesterId, keep = 2) {
+  const r = await ensureRescue();
+  if (!r) return;
+  let mine = [];
+  try {
+    mine = await r.snapMeta.where('key').startsWith(type + ':' + semesterId + ':').toArray();
+  } catch (_) { return; }
+  const drop = mine.sort((a, b) => b.exportedAt - a.exportedAt).slice(keep);
+  for (const d of drop) { try { await deleteSnap(d.key); } catch (_) {} }
+}
+
 // 🔴 损坏抢救：业务库 open() 抛错后（**不再有 delete 这一步**），尽最大努力用原生 IDB 把还能读出的 store dump 进 rescue。
 //    best-effort：任一环节失败就跳过，绝不让抢救本身卡住"必须重建以解锁 app"的主流程。
 export async function rescueFromCorrupt(dbName, label) {
@@ -111,7 +149,11 @@ export async function rescueFromCorrupt(dbName, label) {
       req.onsuccess = () => res(req.result);
       req.onerror = () => rej(req.error);
     });
+    // 🔴 semesterId：从库名剥前缀 —— 抢救快照要能参与「跨学期闸门」判断
+    //    （与当前学期相同时才允许"从中捞回学生"；否则只给下载 / 确认后清理）
+    //    bzr_meta 不是学期库 ⇒ semesterId 留空
     const out = { key: '', type: 'rescue', device: label || dbName, exportedAt: Date.now(), dbName, stores: {} };
+    out.semesterId = (dbName && dbName !== 'bzr_meta' && dbName.indexOf('bzr_') === 0) ? dbName.slice(4) : '';
     const storeNames = Array.from(idb.objectStoreNames);
     for (const sn of storeNames) {
       try {

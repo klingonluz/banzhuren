@@ -217,15 +217,55 @@ export function bindEmpty(root, handler) {
 }
 
 /* ---------- 确认框 ---------- */
-export function confirm({ title, msg, okText = '确定', danger = false, onOk }) {
+export function confirm({ title, msg, okText = '确定', cancelText = '取消', danger = false, onOk, onCancel = null }) {
   const s = showSheet({
     title, closable: true,
     // 🔴 pre-line：确认文案里的换行要保留；msg 一律走 esc（不解析 HTML，避免注入）
     body: `<p class="muted" style="white-space:pre-line">${esc(msg)}</p>`,
-    foot: `<button class="btn ghost" data-close>取消</button>
+    foot: `<button class="btn ghost" data-close>${esc(cancelText)}</button>
            <button class="btn ${danger ? 'danger' : ''}" id="cfm-ok">${esc(okText)}</button>`
   });
-  s.foot.querySelector('#cfm-ok').onclick = () => { s.close(); onOk && onOk(); };
+  let settled = false;
+  const fire = f => { if (!settled) { settled = true; if (f) f(); } };
+  // 取消的三个入口都是"关掉 sheet"：× / 取消按钮 / 点遮罩 —— 统一在这里回调 onCancel
+  s.mask.addEventListener('click', e => {
+    if (e.target === s.mask || e.target.hasAttribute('data-close')) fire(onCancel);
+  });
+  s.foot.querySelector('#cfm-ok').onclick = () => { fire(onOk); s.close(); };
+  return s;
+}
+// Promise 版确认框：给「必须先问、再决定后续流程」的地方用
+// 🔴 不要用 window.confirm() —— 预览面板（sandboxed iframe）会静默返回 false，老师点「确定」也像没反应
+export function confirmAsync(opts) {
+  return new Promise(res => {
+    let settled = false;
+    const done = v => { if (!settled) { settled = true; res(v); } };
+    confirm({ ...opts, onOk: () => done(true), onCancel: () => done(false) });
+  });
+}
+// 取一段文字（Promise<string|null>）。🔴 替代 window.prompt()：预览面板里它被静默拦截返回 null ⇒「点了没反应」。
+//    空输入与取消一律返回 null —— 调用方只需判一次。
+export function askText({ title, label = '', value = '', placeholder = '', okText = '确定', maxlength = 0 }) {
+  return new Promise(resolve => {
+    let won = false;
+    const settle = v => { if (!won) { won = true; resolve(v); } };
+    const p = openPicker({
+      title,
+      body: `<div style="padding:14px 16px">
+        ${label ? `<div class="field"><label>${esc(label)}</label></div>` : ''}
+        <input class="ta" id="at-in" value="${esc(value)}" placeholder="${esc(placeholder)}"${maxlength ? ` maxlength="${maxlength}"` : ''}>
+      </div>`,
+      foot: `<button class="btn ghost" data-pclose>取消</button><button class="btn" id="at-ok">${esc(okText)}</button>`,
+      onClose: () => settle(null)
+    });
+    const inp = p.body.querySelector('#at-in');
+    try { inp.focus(); } catch (_) {}
+    p.foot.querySelector('#at-ok').onclick = () => {
+      const v = inp.value.trim();
+      settle(v || null);
+      p.close();                                   // 已 settle ⇒ onClose 不会再覆盖结果
+    };
+  });
 }
 
 /* ---------- 大图查看（灯箱，支持多图） ---------- */
