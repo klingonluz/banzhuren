@@ -97,15 +97,6 @@ mark{background:#ffeab0;color:inherit;border-radius:3px;padding:0 1px}
 /* 🔴 设置里「极速记录默认分类」等选项多、名字长 → 改横向滑动一行，不挤成多行 */
 .seg.hscroll{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch}
 .seg.hscroll button{flex:none;white-space:nowrap}
-/* 🔴「新建学期」的起始学年用**原生下拉**（老师 2026-09-29 提的改法）。
-   理由：候选学年会随年头增长（本机已有学年永久保留 ∪ 当前学年 ±1），
-   一排按钮 4 项起就得折行、9 项折三排，越攒越占地方；下拉恒定一行高，条目再多也不撑高弹层。
-   ⚠️ 下拉里只列**起始年份**，后一年自动 +1 ⇒ 选项文本仍是单年，
-   ❌ 不要写成「2026-2027 学年」这种区间（那样老师会以为自己要挑两端）。
-   ⚠️ 类名用 `.yrs` 而不是 `.sel` —— `.sel` 已被「学生选择」的**选中态**占用（见下面的 .student-pick.sel），
-   同名会让那个按钮意外吃到这里的盒模型。 */
-.yrs{width:100%;border:1px solid var(--line);border-radius:8px;padding:9px 10px;font:inherit;
-  font-size:var(--fs-base);background:#fff;color:var(--txt);box-sizing:border-box;cursor:pointer}
 textarea{width:100%;border:1px solid var(--line);border-radius:var(--r-s);padding:10px;font:inherit;resize:vertical}
 .ta{width:100%;border:1px solid var(--line);border-radius:8px;padding:10px;font:inherit;font-size:13px;box-sizing:border-box}
 /* 只读展示块（首装向导里的「本学期」）：虚线边 + 浅底 ⇒ 一眼看出「这是算出来的，不是让你输的」 */

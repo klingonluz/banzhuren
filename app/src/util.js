@@ -142,21 +142,15 @@ export function nextSemName(cur) {
   return curSemName();
 }
 
-// 新建学期时可选的起始学年。规则就一句：
-//   **只列「本机有记录的学年」和「当前学年 / 下一个学年」** —— 每一项都派得上用场。
-//   ① 本机已有学期解析出的学年：有记录 ⇒ 以后可能还要建学期（拆班、换班），一律保留；
-//   ② 当前学年 base 与 base+1：以 8 月 1 日为界算学年 ⇒ base+1 就是「接下来的那个学年」，
-//      6 月（第二学期末）能提前建下学期所在的新学年；9 月一到 base 自己前进 ⇒ 窗口整体后移，
-//      **不需要任何人改代码**（这才是「后续年份」的正确写法）。
-// ❌ 刻意不往前铺固定年数：老师 2026 才开始用，2026 之前本机一条记录都没有，列出来是噪音。
-// ❌ 也不往后多铺几年：那不是「自动」，只是把事情推给以后的自己。
-// ⚠️ `d` 同 `curStartYear()`：只为测试 / 探针注入日期，正常调用不传。
-export function semYearOptions(curNames, d = new Date()) {
-  const set = new Set();
-  (curNames || []).forEach(n => { const y = semStartYear(n); if (y) set.add(y); });
-  const base = curStartYear(d);
-  set.add(base);
-  set.add(base + 1);
-  const out = [...set].filter(y => y >= 2000 && y <= 2100).sort((a, b) => b - a);
-  return out.length ? out : [base];   // 兜底：万一剩下的学年都不在合理区间，至少给当前学年
+// 学期名 → 落在这个学期里的一天：第一学期 → 该学年 9/1，第二学期 → 次年 2/1。
+// 用途：「新建学期」面板要把**默认学期**摆成日期输入框的值，日期与学期名就必须互相推得回来
+//       （`curSemName(semDateOf(n)) === n`）—— 否则老师看到的日期和「将创建」会各说一个学期。
+// ⚠️ 9/1 与 2/1 都稳稳落在该学期内（8/1 分界两侧各留了整整一个月），不是随便挑的日子。
+// 认不出格式 / 年份离谱 ⇒ 回落到今天（调用方总能拿到一个合法日期，不会算出 NaN）。
+export function semDateOf(name) {
+  const y = semStartYear(name);
+  if (!y || y < 2000 || y > 2100) return new Date();
+  const t2 = /第二学期/.test(name);
+  // ⚠️ 第二学期在**下一年的 2 月**（2026-2027 学年第二学期 = 2027-02-01），不是同年的 2 月
+  return new Date(t2 ? y + 1 : y, t2 ? 1 : 8, 1);
 }

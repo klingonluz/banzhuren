@@ -19,11 +19,11 @@ import { listSnaps, getSnap, deleteSnap, snapshotSemester, pruneSnaps } from '..
 import { buildArchiveHTML, archiveFileName, fmtBytes } from '../archive.js';
 import { seedBaseline, seedTaxonomy, WUYU, GUANZHU } from '../db/seed.js';
 import { esc, toast, openPicker, emptyState, confirm, confirmAsync, askText, syncSeg, onSeg, banner, closeBanner, showSheet, filterStudents, afterBack, actionSheet } from '../ui.js';
-import { download, blobToDataURL, stamp, kindOfFile, normSemName, semNameOf, nextSemName, curSemName, semYearOptions, semStartYear } from '../util.js';
+import { download, blobToDataURL, stamp, kindOfFile, normSemName, nextSemName, curSemName, semDateOf, dateStr, dateOfStr } from '../util.js';
 import { flushDraft } from './record.js';
 
 const SCHEMA_VERSION = 7;                 // 当前 schema 版本（V11.13：templates 移除 / images 去 del / 记录增复合索引）
-const APP_VER = 'v1.8.1';                 // 🔴 产品版本号（对外）：语义化递增，与 main.js 的 APP_VER 保持一致
+const APP_VER = 'v1.8.2';                 // 🔴 产品版本号（对外）：语义化递增，与 main.js 的 APP_VER 保持一致
 const PLAN_VER = 'V11.16';                // 🔴 方案版本号（内部，仅设置页可见）：与 dev/docs 里配对的方案文件同步，改功能才顺延
 
 // 🔴 存储口径三处统一：一个函数、不写死（§4.8.18 ①-4）
@@ -656,50 +656,46 @@ export function openSemesters() {
   };
   draw();
 
-  // 新建学期：**学年 + 学期两个下拉**，拼固定名。同名视为同一学期 ⇒ 提示切过去，不再造第二个。
+  // 新建学期：**给一个日期，学期名由这个日期推出来** —— 与首装向导同一套规则
+  //   （老师 2026-09-30：「学期管理的新建学期也是按这个逻辑来，按选择的日期来定」）。
+  //   ⇒ 原来的「起始学年下拉 + 学期分段」两个选择器**撤掉**：一个日期同时定下学年与学期，
+  //     也就不可能出现「日期说 3 月、学期写第一学期」这种自相矛盾。
+  //   🔴 8/1 边界（哪天起算新学年）仍然只在 util.js::curStartYear() 一处算，这里不许自己比 getMonth()。
+  //   ❌ 仍然不让老师手输名字：同一个学期两种叫法会让导入认不出来（见 openRestore 的两步认学期）。
   p.foot.querySelector('#sm-new').onclick = async () => {
     const sems = await listSemesters();
-    // 默认值 = **今天所在的学期**（`curSemName()`：8/1 起 = 当年…次年第一学期；8/1 前 = 上一年…当年第二学期）。
-    // 🔴 日期边界只在 util.js::curStartYear() 一处算，这里别再自己比 getMonth()。
-    // ⚠️ 如果那个学期本机已经建过，就顺着 `nextSemName()` 往后挪到**第一个还没建的** ——
-    //    否则默认值指着一个已有学期，老师一点「创建」只会撞上「这个学期已经有了」。
+    // 默认日期 = **本机第一个还没建的学期**（从「今天所在的学期」顺着 nextSemName() 往后找）。
+    // ⚠️ 今天所在的学期通常已经建过 ⇒ 默认值必须顺延，否则老师一点「创建」就撞上「这个学期已经有了」。
+    //    最多顺延 8 步：真到那一步说明学期数量不正常，宁可停在原地也别绕圈。
     let dft = curSemName();
     const taken = new Set(sems.map(s => normSemName(s.name)));
     for (let i = 0; i < 8 && taken.has(normSemName(dft)); i++) dft = nextSemName(dft);
-    let year = semStartYear(dft) || new Date().getFullYear();
-    let term = /第二学期/.test(dft) ? 2 : 1;
-    // 起始学年候选走下拉。⚠️ 默认值**必须**在候选里，否则 select 会自己落到第一项、和 year 变量不同步
-    const years = semYearOptions(sems.map(s => s.name));
-    if (!years.includes(year)) { years.push(year); years.sort((a, b) => b - a); }
+    // 学期名换算成「落在这个学期里的那一天」再喂给 <input type="date">（两者互推得回来）
+    const dftDate = dateStr(semDateOf(dft));
     const np = openPicker({
       title: '新建学期',
       lead: '学期名按固定格式生成，不自由输入',
       body: `<div style="padding:12px 14px">
-        <div class="kv" style="border:none"><span>起始学年</span></div>
-        <select class="yrs" id="sm-year" aria-label="起始学年">${years.map(y =>
-          `<option value="${y}"${y === year ? ' selected' : ''}>${y}</option>`).join('')}</select>
-        <div class="kv"><span>学期</span></div>
-        <div class="seg sm" id="sm-term">
-          <button data-v="1"${term === 1 ? ' class="on"' : ''}>第一学期</button>
-          <button data-v="2"${term === 2 ? ' class="on"' : ''}>第二学期</button>
-        </div>
-        <div class="save-note" id="sm-prev"></div>
+        <div class="field"><label>学期起始日期</label><input class="ta" type="date" id="sm-date" value="${dftDate}"></div>
+        <div class="field"><label>将创建</label><div class="ta ro" id="sm-prev"></div></div>
+        <div class="save-note">学期跟着上面的日期走（8 月 1 日起算新学年），起始日期同时用于课表周次。名单从当前学期复制（转出的学生不带过去），记录 / 图片 / 课表不继承；本机已有这个学期时不会重复建，会问你要不要切过去。</div>
       </div>`,
       foot: `<button class="btn ghost" data-pclose>取消</button><button class="btn" id="sm-ok">创建</button>`
     });
-    const sync = () => {
-      np.body.querySelector('#sm-prev').innerHTML =
-        `将创建：<b>${esc(semNameOf(year, term))}</b>。名单从当前学期复制（转出的学生不带过去），记录 / 图片 / 课表不继承。`;
-    };
-    onSeg(np.body.querySelector('#sm-term'), v => { term = Number(v); sync(); });
-    // 起始学年是原生下拉 ⇒ 用 change（onSeg 是给 .seg 分段按钮用的）
-    np.body.querySelector('#sm-year').onchange = e => { year = Number(e.target.value); sync(); };
+    const smDate = np.body.querySelector('#sm-date');
+    const smPrev = np.body.querySelector('#sm-prev');
+    // 选了哪一天就落哪个学期 ⇒ 日期与「将创建」永远说的是同一个学期（改日期即时刷新）
+    const pickD = () => { const x = dateOfStr(smDate.value); return isNaN(x.getTime()) ? new Date() : x; };
+    const sync = () => { smPrev.textContent = curSemName(pickD()); };
+    smDate.oninput = smDate.onchange = sync;
     sync();
     np.foot.querySelector('#sm-ok').onclick = async () => {
-      const name = semNameOf(year, term);
+      const d = pickD(), at = d.getTime(), name = curSemName(d);
       const sems2 = await listSemesters();
       const same = sems2.find(s => normSemName(s.name) === normSemName(name));
       if (same) {
+        // 同名即同一学期 ⇒ 只问「切过去」，**不新建**；也**不动它已有的起始日期**
+        // （老师只是要切到那个学期，顺手改掉起始日期会牵连课表周次）
         const go = await confirmAsync({
           title: '这个学期已经有了',
           msg: `本机已经有「${same.name}」。\n\n同一个学期只留一个 —— 切过去继续用它吗？`,
@@ -708,7 +704,8 @@ export function openSemesters() {
         if (go) { np.close(); await switchSemester(same); p.close(); }
         return;
       }
-      const ns = { id: 'sem_' + Date.now().toString(36), name, startAt: Date.now(), status: 'active' };
+      // startAt 用老师选的那一天（不是“此刻”）—— 它就是课表周次的第 1 天
+      const ns = { id: 'sem_' + Date.now().toString(36), name, startAt: at, status: 'active' };
       await ensureSemester(ns);
       const from = openSemester(state.currentSemesterId);
       try {
