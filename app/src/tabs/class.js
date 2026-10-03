@@ -4,7 +4,7 @@
 import { state } from '../state.js';
 import { listStudents, listCollections, putCollection, deleteCollection, getSchedule, saveSchedule } from '../db/semester.js';
 import { esc, toast, openPicker, emptyState, confirm, onSeg, filterStudents, afterBack } from '../ui.js';
-import { pad } from '../util.js';
+import { dateStr } from '../util.js';
 import { exportPeriods } from '../export.js';
 import { openPeriodsImport } from './data.js';
 
@@ -17,7 +17,8 @@ function todayInfo() {
   const d = new Date();
   const wd = d.getDay();                 // 0=周日
   const dayIdx = wd >= 1 && wd <= 5 ? wd - 1 : 0;
-  return { dayIdx, dateStr: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`, dayName: DAYS[dayIdx], wd };
+  // 🔴 日期串口径唯一：util.dateStr（本地时区）—— 旧版这里手拼过一份补零逻辑，与 record.js 的那份是重复实现
+  return { dayIdx, dateStr: dateStr(d), dayName: DAYS[dayIdx], wd };
 }
 function weekNo() {
   const start = state.semester?.startAt ? new Date(state.semester.startAt) : null;
@@ -59,6 +60,13 @@ function parity() { return weekNo() % 2 === 1 ? 'odd' : 'even'; }   // 单数周
 function weekParityLabel() { return parity() === 'odd' ? '单周' : '双周'; }
 
 /* ---------- 数据模型归一化（兼容旧库：root weekly / classes[] → 本班 + 授课班级） ---------- */
+// 规范化 JSON（键排序）用于「归一化后是否真的变了」的深比较：课表是纯 JSON 数据，无 Blob / 函数
+const canon = v => {
+  if (v === null || v === undefined) return 'null';
+  if (typeof v !== 'object') return JSON.stringify(v);
+  if (Array.isArray(v)) return '[' + v.map(canon).join(',') + ']';
+  return '{' + Object.keys(v).sort().map(k => JSON.stringify(k) + ':' + canon(v[k])).join(',') + '}';
+};
 // 🔴 本班课表单元格：旧库存「字符串」（'语文'），新库存 {subject, teacher}
 //    ⇒ 读时统一归一化，**不动库结构、不 bump schema**（迁移规则见 db/migrate.js）
 function normCell(c) {
@@ -836,10 +844,14 @@ function openNewColl(db, colls, rerender) {
 
 function openRoll(coll, db, rerender) {
   const students = [];
-  let view = 'grid', filter = 'all', lastToggled = null;
+  let view = 'grid', filter = 'all', lastToggled = null, dirty = false;
   const paid = new Set(coll.paidIds || []);
   const p = openPicker({
     title: coll.name,
+    // 🔴 点名过程中**不重渲背后的班务页**：rerender 会把整个 scrollEl 的 innerHTML 重写一遍，
+    //    老师点一个学生就跳回顶部（40 多人的班要点几十次，滚动位置反复丢）。
+    //    改成标 dirty，等面板关上（完成 / ✕ / 遮罩 / 返回键）时统一刷新一次。
+    onClose: () => { if (dirty) rerender(); },
     body: `<div style="padding:12px 14px">
       <input class="search" id="rl-q" type="search" enterkeyhint="search" placeholder="搜索姓名 / 拼音首字母" style="border:1px solid var(--line);border-radius:8px;margin-bottom:8px">
       <div class="row" style="gap:8px;margin-bottom:8px">
@@ -885,7 +897,7 @@ function openRoll(coll, db, rerender) {
     lastToggled = { id, was };
     coll.paidIds = [...paid];
     await putCollection(db, coll);
-    draw(); rerender();
+    dirty = true; draw();                     // 🔴 只重画面板内部（统计 / 网格），背后页面等关闭时再刷
   };
   p.foot.querySelector('#rl-undo').onclick = async () => {
     if (!lastToggled) { toast('没有可撤销的操作'); return; }
@@ -893,7 +905,7 @@ function openRoll(coll, db, rerender) {
     lastToggled = null;
     coll.paidIds = [...paid];
     await putCollection(db, coll);
-    toast('已撤销'); draw(); rerender();
+    dirty = true; toast('已撤销'); draw();
   };
 }
 
@@ -902,8 +914,11 @@ export async function mount(scrollEl) {
   const db = state.db;
   const students = await listStudents(db);
   let sched = await getSchedule(db);
-  sched = normalizeSched(sched, state.semester);     // 旧库 weekly/classes[] → 本班 + 授课班级，并持久化
-  await saveSchedule(db, sched);
+  const rawSched = canon(sched);
+  sched = normalizeSched(sched, state.semester);     // 旧库 weekly/classes[] → 本班 + 授课班级
+  // 🔴 归一化**确实改了东西**才落盘：旧版每次进班务页都无条件 saveSchedule 一遍，
+  //    没变化也写库（无谓的写，还平白推高同步冲突面）。首次 / 迁移后仍会正常写入。
+  if (canon(sched) !== rawSched) await saveSchedule(db, sched);
   let colls = await listCollections(db);
 
   const render = () => {

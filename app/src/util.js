@@ -29,6 +29,18 @@ export function dateOfStr(s) {
   return new Date(String(s || '') + 'T12:00:00');
 }
 
+// 姓名是否合规：普通姓名 2~4 个汉字；**少数民族姓名允许含「·」且更长**（如「阿依古丽·买买提」）。
+// 🔴 三个写入端（首装向导粘贴 / 名单批量导入 / 手加与改名）共用这一个口径，别各写一份
+//    （旧版三处各判 `length >= 2 && length <= 4`，长名直接被拒）。
+// ⚠️ 超过 4 字**必须含「·」**：这样既放得开少数民族姓名，又挡住「两行名字粘成一行」的常见错
+//    （如「张梓涵李思远」7 个字无间隔号）。
+export function validName(s) {
+  const t = String(s == null ? '' : s).trim().replace(/\u3000/g, '');
+  if (!/^[\u4e00-\u9fa5·]{2,20}$/.test(t)) return false;
+  if (t.length <= 4) return true;
+  return t.includes('·') && !t.startsWith('·') && !t.endsWith('·');
+}
+
 // 触发一次文件下载（Blob → <a download> 点击 → 回收 blob URL）
 export function download(filename, text, mime = 'application/json') {
   const blob = new Blob([text], { type: mime + ';charset=utf-8' });

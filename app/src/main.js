@@ -7,7 +7,7 @@ import {
 import { getSetting, setSetting, meta, listSemesters, putSemester } from './db/meta.js';
 import { openSemester, listStudents, bulkPutStudents } from './db/semester.js';
 import { nameInitials } from './pinyin.js';
-import { curSemName, normSemName, dateStr, dateOfStr } from './util.js';
+import { curSemName, normSemName, dateStr, dateOfStr, validName } from './util.js';
 import { el, esc, toast, banner, openPicker, confirmAsync, askText, afterBack } from './ui.js';
 import { mount as mountRecord } from './tabs/record.js';
 import { mount as mountClass } from './tabs/class.js';
@@ -28,7 +28,7 @@ let activeTab = 'record';
 // 🔴 产品版本号（对外：页脚展示 + 更新 UI）。语义化：修 bug 升末位（v1.0.1）、
 //    加功能升中位（v1.1.0）、数据结构不兼容升首位（v2.0.0）。首个公开发布 = v1.0.0。
 //    注意：内部还有一套「方案文档版本号」（如 V11.10），只用于设计记录，不对外，见 tabs/data.js 的 PLAN_VER。
-const APP_VER = 'v1.8.2';
+const APP_VER = 'v1.8.3';
 // 🔴 部署网址锚点（换网址风险防护，§13.7.1）：留空 = 首次启动自动记录当前 origin 并比对；
 //    上线固定域名后建议填死，例如 'https://banzhuren.example.com'，网址变化即弹告警提醒导入备份。
 const EXPECTED_ORIGIN = '';
@@ -133,7 +133,9 @@ async function onQuickBackup() {
   if (chip0) chip0.textContent = '导出中…';
   try {
     await quickBackup();                 // 内部已更新 lastExport 并关闭横幅
-    toast('备份已导出（全量含图）');
+    // 🔴 <a download> 感知不到老师是否真取消了下载 ⇒ 只说「已开始下载，请确认」，
+    //    不能说「备份已导出」（否则点了取消也照样重置提醒周期）。
+    toast('备份文件已开始下载（全量含图），请确认已保存');
   } catch (e) {
     banner('backupBanner', `💾 备份导出失败：<b>${esc(e.message || e)}</b>（数据未被改动，可重试）。<span class="chip" id="bk-now">重试</span>`, 'warn');
     bindBackupChip();
@@ -267,8 +269,10 @@ async function maybeOnboard() {
   });
   s2.ui.foot.querySelector('#ob-skip').onclick = () => s2.next();
   s2.ui.foot.querySelector('#ob-2').onclick = async () => {
+    // 🔴 姓名口径与「数据 → 管理名单」完全一致（util.validName）：普通姓名 2~4 字，
+    //    少数民族姓名可含「·」且更长。旧版这里硬判 length 2~4，长名会被静默丢掉。
     const names = (s2.ui.body.querySelector('#ob-names').value || '')
-      .split('\n').map(s => s.trim()).filter(s => s.length >= 2 && s.length <= 4);
+      .split('\n').map(s => s.trim()).filter(validName);
     if (names.length) {
       await bulkPutStudents(state.db, names.map((n, i) => ({ id: 's' + Date.now().toString(36) + i, name: n, pinyin: nameInitials(n), out: 0, del: 0 })));
       toast(`已导入 ${names.length} 人`);

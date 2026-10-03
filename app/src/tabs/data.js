@@ -19,12 +19,12 @@ import { listSnaps, getSnap, deleteSnap, snapshotSemester, pruneSnaps } from '..
 import { buildArchiveHTML, archiveFileName, fmtBytes } from '../archive.js';
 import { seedBaseline, seedTaxonomy, WUYU, GUANZHU } from '../db/seed.js';
 import { esc, toast, openPicker, emptyState, confirm, confirmAsync, askText, syncSeg, onSeg, banner, closeBanner, showSheet, filterStudents, afterBack, actionSheet } from '../ui.js';
-import { download, blobToDataURL, stamp, kindOfFile, normSemName, nextSemName, curSemName, semDateOf, dateStr, dateOfStr } from '../util.js';
+import { download, blobToDataURL, stamp, kindOfFile, normSemName, nextSemName, curSemName, semDateOf, dateStr, dateOfStr, validName } from '../util.js';
 import { flushDraft } from './record.js';
 
 const SCHEMA_VERSION = 7;                 // 当前 schema 版本（V11.13：templates 移除 / images 去 del / 记录增复合索引）
-const APP_VER = 'v1.8.2';                 // 🔴 产品版本号（对外）：语义化递增，与 main.js 的 APP_VER 保持一致
-const PLAN_VER = 'V11.16';                // 🔴 方案版本号（内部，仅设置页可见）：与 dev/docs 里配对的方案文件同步，改功能才顺延
+const APP_VER = 'v1.8.3';                 // 🔴 产品版本号（对外）：语义化递增，与 main.js 的 APP_VER 保持一致
+const PLAN_VER = 'V11.17';                // 🔴 方案版本号（内部，仅设置页可见）：与 dev/docs 里配对的方案文件同步，改功能才顺延
 
 // 🔴 存储口径三处统一：一个函数、不写死（§4.8.18 ①-4）
 async function storageBreakdown() {
@@ -36,7 +36,16 @@ async function storageBreakdown() {
   const img = +(imgN * 0.4).toFixed(2);
   const oth = 1.2;
   const total = +(rec + img + oth).toFixed(2);
-  return { recN, imgN, rec, img, oth, total };
+  // 🔴 真实用量拿得到就给真实值（navigator.storage.estimate：含本应用全部存储 = IDB + 缓存等）；
+  //    拿不到（老浏览器 / 预览面板）就回落纯估算 —— 设置页两行都如实标注，不拿估算冒充实际。
+  let real = null;
+  try {
+    if (navigator.storage && navigator.storage.estimate) {
+      const est = await navigator.storage.estimate();
+      if (est && est.usage) real = est.usage;
+    }
+  } catch (_) {}
+  return { recN, imgN, rec, img, oth, total, real };
 }
 function fmtMB(n) { return n >= 1 ? n.toFixed(1) + 'MB' : Math.round(n * 1024) + 'KB'; }
 
@@ -403,7 +412,9 @@ export async function mount(scrollEl) {
     okText: '开始归档', onOk: doArchive
   });
   scrollEl.querySelector('#dt-backup').onclick = async () => {
-    try { await quickBackup(); toast('备份已导出（全量含图）'); render(); }
+    // 🔴 <a download> 感知不到老师是否真取消了下载 ⇒ 只能说「已开始下载，请确认文件已保存」，
+    //    不能说「备份成功」（否则老师点了取消、提醒周期照样重置，假阳性）。
+    try { await quickBackup(); toast('备份文件已开始下载（全量含图），请确认已保存'); render(); }
     catch (e) { banner('errBanner', '⚠️ 导出失败：<b>' + esc(e.message || e) + '</b>（数据未被改动，可重试）。'); }
   };
   const snapBtn = scrollEl.querySelector('#dt-snap-view');
@@ -538,23 +549,25 @@ async function drawStudents(box) {
     const names = raw.split('\n').map(s => s.trim().replace(/\u3000/g, ' ').trim()).filter(Boolean);
     if (!names.length) { toast('请先粘贴名单'); return; }
     const exist = new Set(students.map(s => s.name));
-    let dup = 0, bad = 0, added = 0;
+    const fresh = [];
+    let dup = 0, bad = 0;
     for (const n of names) {
-      if (n.length < 2 || n.length > 4) { bad++; continue; }
+      if (!validName(n)) { bad++; continue; }          // 🔴 口径统一走 util.validName（2~4 汉字，或含「·」的少数民族长名）
       if (exist.has(n)) { dup++; continue; }
-      exist.add(n); added++;
-      students.push({ id: 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), name: n, pinyin: nameInitials(n), out: 0, del: 0 });
+      exist.add(n);
+      fresh.push({ id: 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), name: n, pinyin: nameInitials(n), out: 0, del: 0 });
     }
-    await bulkPutStudents(db, students.filter(s => s.id));
-    toast(`导入完成：新增 ${added}，跳过重复 ${dup}${bad ? `，忽略 ${bad} 个长度异常` : ''}`);
+    // 🔴 只写**新增**的那些：旧写法把已有学生整行 bulkPut 一遍，白写一遍还平白推高同步冲突面
+    if (fresh.length) await bulkPutStudents(db, fresh);
+    toast(`导入完成：新增 ${fresh.length}，跳过重复 ${dup}${bad ? `，忽略 ${bad} 个不合规姓名` : ''}`);
     drawStudents(box);
   };
   box.querySelector('#mg-add').onclick = async () => {
     // 🔴 不用 window.prompt（预览面板会静默返回 null ⇒「点了没反应」）
-    const name = await askText({ title: '手加学生', label: '学生姓名（2~4 字）', placeholder: '张梓涵', okText: '添加', maxlength: 4 });
+    const name = await askText({ title: '手加学生', label: '学生姓名（2~4 字，少数民族姓名可含「·」）', placeholder: '张梓涵', okText: '添加', maxlength: 20 });
     if (!name) return;
     const n = name.trim();
-    if (n.length < 2 || n.length > 4) { toast('姓名需 2~4 字'); return; }
+    if (!validName(n)) { toast('姓名需 2~4 个汉字；少数民族姓名可含「·」'); return; }
     await bulkPutStudents(db, [{ id: 's' + Date.now().toString(36), name: n, pinyin: nameInitials(n), out: 0, del: 0 }]);
     toast('已添加'); drawStudents(box);
   };
@@ -587,7 +600,9 @@ async function drawStudents(box) {
     const rn = e.target.closest('[data-rename]');
     if (rn) {
       const s = students.find(x => x.id === rn.dataset.rename);
-      const nv = await askText({ title: '改姓名', label: '新姓名（2~4 字）', value: s.name, okText: '保存', maxlength: 4 });
+      const nv = await askText({ title: '改姓名', label: '新姓名（2~4 字，少数民族姓名可含「·」）', value: s.name, okText: '保存', maxlength: 20 });
+      // 🔴 旧版改名**完全不校验**长度：取消弹层会返回 null（这里不写库），但空串以外任意长度都会落库
+      if (nv && !validName(nv)) { toast('姓名需 2~4 个汉字；少数民族姓名可含「·」'); return; }
       if (nv) { s.name = nv; if (!s.pyManual) s.pinyin = nameInitials(s.name); await bulkPutStudents(db, [s]); toast('已更新'); drawStudents(box); }
       return;
     }
@@ -797,16 +812,37 @@ export async function switchSemester(s) {
 // 🔴 v1.5.0：归档与删除彻底解耦。
 //    旧版是「导出 → 立即清表 → 7 天后自动删库」，删除风险全压在"导出是否成功"这一个前提上；
 //    现在归档**永不删数据**，省空间由老师到档案柜点「清除本机副本」（见 clearSemesterCopy）。
+// 🔴 归档核对弹层（真实踩过的坑）：一次点按连发两个下载，部分手机浏览器会拦下第二个
+//    （或要先点「允许此网站下载多个文件」）—— 老师于是只拿到一半归档、毫无感知。
+//    这里把两份文件名摊开，各配一个「重新下载」：被拦了就补一次，凑成一个完整动作。
+function verifyArchiveFiles(jsonName, htmlName, jsonText, htmlText) {
+  const p = openPicker({
+    title: '请核对两份归档文件',
+    lead: '若只收到一份，点对应的「重新下载」补下即可。',
+    body: `<div style="padding:14px 16px">
+      <div class="li"><div style="flex:1;min-width:0"><div class="nm">📄 ${esc(jsonName)}</div><div class="meta">备份 · 可原样导入恢复</div></div><button class="mini" data-dlj>重新下载</button></div>
+      <div class="li"><div style="flex:1;min-width:0"><div class="nm">🌐 ${esc(htmlName)}</div><div class="meta">报告 · 双击即可只读查看（含图）</div></div><button class="mini" data-dlh>重新下载</button></div>
+      <div class="save-note">两份都存到电脑或网盘后，再到档案柜「清除本机副本」。</div>
+    </div>`,
+    foot: `<button class="btn" data-pclose>都在手上了</button>`
+  });
+  p.body.onclick = e => {
+    if (e.target.closest('[data-dlj]')) download(jsonName, jsonText, 'application/json');
+    if (e.target.closest('[data-dlh]')) download(htmlName, htmlText, 'text/html');
+  };
+}
+
 async function doArchive() {
   const sem = state.semester;
   const now = Date.now();
-  let jsonName, htmlName, pack;
+  // 🔴 两份正文留在函数作用域：核对弹层里的「重新下载」要能原样再发一次
+  let jsonName, htmlName, pack, jsonText = '', htmlText = '';
   try {
     pack = await buildExportPack();
     jsonName = archiveFileName(sem?.name, 'json', now);
     htmlName = archiveFileName(sem?.name, 'html', now);
-    const jsonText = JSON.stringify(pack);
-    const htmlText = buildArchiveHTML(pack);
+    jsonText = JSON.stringify(pack);
+    htmlText = buildArchiveHTML(pack);
     download(jsonName, jsonText, 'application/json');
     download(htmlName, htmlText, 'text/html');
     await putSemester({
@@ -818,7 +854,6 @@ async function doArchive() {
     banner('errBanner', `⚠️ 归档失败：<b>本机数据未做任何改动</b>（可重试）。${esc(e.message || e)}`);
     return;
   }
-  toast('已归档：两份文件已下载，请存到电脑或网盘');
   warnImageErrors(pack);                        // 🔴 若有图没带上，如实告知（归档包同样要可信）
   banner('archiveBanner',
     `📚 「${esc(sem?.name || '本学期')}」已归档。两份文件（<b>.json</b> 备份 / <b>.html</b> 报告）请存到电脑或网盘；要省空间可到档案柜「清除本机副本」。`,
@@ -833,9 +868,13 @@ async function doArchive() {
     const taken = new Set(sems.map(x => normSemName(x.name)));
     let nn = nextSemName(sem && sem.name), guard = 0;
     while (taken.has(normSemName(nn)) && guard++ < 8) nn = nextSemName(nn);
-    const ns = { id: 'sem_' + Date.now().toString(36), name: nn, startAt: Date.now(), status: 'active' };
+    // 🔴 startAt 用该学期**自己的起始日**（第一学期 9/1 / 第二学期次年 2/1），不是「此刻」——
+    //    归档一般发生在期末（比如 6 月），拿 Date.now() 当起点会让开学后的 weekNo 直接是第 14 周。
+    const ns = { id: 'sem_' + Date.now().toString(36), name: nn, startAt: semDateOf(nn).getTime(), status: 'active' };
     await ensureSemester(ns); await seedBaseline(openSemester(ns.id)); await switchSemester(ns);
   }
+  // 核对弹层最后开：叠在横幅之上，老师能立刻看到「有没有真的收到两份文件」
+  verifyArchiveFiles(jsonName, htmlName, jsonText, htmlText);
   refresh();
 }
 
@@ -1069,16 +1108,17 @@ async function doRestore(file, { replace, semName, targetId }) {
   //    把它改成 inactive 会让 meta 里一个 active 都没有（顶栏 / 学期管理看着像"没有在用学期"）。
   // ⚠️ 替换档**不改学期名**：名字是老师自己定的，替换的是数据不是名字
   //    （按名字认出来的那一支，本机名和备份名本来就不同，改了反而看不出是哪个）。
+  // 🔴 startAt = 备份里那个学期自己的起始日（weekNo 的第 1 天 = 课表周次的起点），不是「此刻」。
   const startAt = (file.semester && file.semester.startAt) || file.exportedAt || Date.now();
   const finalName = (replace && mine && mine.name) ? mine.name
     : (sems.some(s => s.name === semName && s.id !== semId) ? `${semName}（导入 ${stamp().slice(0, 10)}）` : semName);
-  if (replace && occupied && !archived) {
-    await ensureSemester({ ...mine });          // 在用：名字 / 状态 / id 全保留
-  } else {
-    // 本机没有 / 已清除 / 已归档 ⇒ 统一落成 inactive（可见、可切换）
-    //   · 本机没有 → 随后主路 switchSemester 会把它置为 active
+  if (!(replace && occupied && !archived)) {
+    // 需要落行的三种情形：· 本机没有 → 随后主路 switchSemester 会把它置为 active
     //   · 已清除 → 必须显式回写，否则切换器把它过滤掉、老师进不去（P0-4）
     //   · 已归档 → 与弹层文案一致：替换后回到「在用」
+    // ⚠️ 「替换一个正在用的学期」这一支**刻意不写**：meta.semesters 里那行已经是对的
+    //    （名字 / 状态 / id 都保留），旧代码 `ensureSemester({ ...mine })` 是句空操作 ——
+    //    ensureSemester 默认只补缺，exists 且没传 opts.status 时一个字节都不改。
     await ensureSemester({ id: semId, name: finalName, startAt, status: 'inactive' }, { status: 'inactive' });
   }
 
@@ -1098,7 +1138,9 @@ async function doRestore(file, { replace, semName, targetId }) {
     showResult({ semName: outName, stuN, recN, imgN, bad, replace: true, switched: false });
   } else {
     // 主路：新建出来的这个学期就是老师要恢复的那个 ⇒ 装完自动切过去
-    await switchSemester({ id: semId, name: finalName, startAt: Date.now(), status: 'inactive' });
+    // 🔴 startAt 传上面算好的那个，**不能写 Date.now()**：switchSemester 内部是整行 putSemester 覆盖，
+    //    写「此刻」会把备份里学期的起始日冲掉 ⇒ 恢复当天就成「第 1 周」，课表周次与单双周全错位。
+    await switchSemester({ id: semId, name: finalName, startAt, status: 'inactive' });
     showResult({ semName: finalName, stuN, recN, imgN, bad, replace: false, switched: true });
   }
 }
@@ -1219,10 +1261,11 @@ function openTrash() {
     title: '清空回收站', msg: '全部彻底删除，不可恢复。', danger: true, okText: '清空',
     onOk: async () => {
       const del = await listDeleted(state.db);
-      for (const r of del) {
-        for (const id of (r.imageIds || [])) { try { await deleteImage(state.db, id); } catch {} }
-        await state.db.growth_records.delete(r.id);
-      }
+      // 🔴 整批操作就别逐条往返：图与记录各一次 bulkDelete（条数多时逐条 delete 会把事务拖得很长）
+      const imgIds = new Set();
+      del.forEach(r => (r.imageIds || []).forEach(id => imgIds.add(id)));
+      await state.db.images.bulkDelete([...imgIds]);
+      await state.db.growth_records.bulkDelete(del.map(r => r.id));
       toast('回收站已清空'); p.close(); refresh();
     }
   });
@@ -1484,7 +1527,9 @@ export async function openSettings() {
     let orphans = [];
     try {
       const s = await storageBreakdown();
-      p.body.querySelector('#st-sto-hint').textContent = `约 ${fmtMB(s.total)}`;
+      p.body.querySelector('#st-sto-hint').textContent = s.real
+        ? `估算 ${fmtMB(s.total)} · 实际 ${fmtBytes(s.real)}`
+        : `约 ${fmtMB(s.total)}`;
       const t = Math.max(0.01, s.total);
       const bar = p.body.querySelector('#st-bar');
       bar.children[0].style.width = (s.rec / t * 100) + '%';

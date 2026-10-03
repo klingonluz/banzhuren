@@ -4,7 +4,7 @@ import { state } from '../state.js';
 import {
   listStudents, listRecordsPage, listRecordsByCategoryPage, listRecordsWithImgPage,
   addRecord, softDeleteRecord, restoreRecord,
-  countActiveRecords, getRecord, putImage, getImageBlob, incTagUse
+  countActiveRecords, getRecord, putImage, getImageBlob, deleteImage, incTagUse
 } from '../db/semester.js';
 import { WUYU, GUANZHU, GZ_GROUPS, GZ_SUB, TAGS_SEED } from '../db/seed.js';
 import { lintText, PHOTO_BAN, PHOTO_OK } from '../privacy.js';
@@ -12,7 +12,7 @@ import {
   el, esc, toast, banner, openPicker, filterStudents, srowList,
   actionSheet, undoBar, emptyState, bindEmpty, confirm, lightbox
 } from '../ui.js';
-import { pad } from '../util.js';
+import { dateStr } from '../util.js';
 
 const TL_PAGE = () => +(state.settings.tlPage || 20);   // 🔴 分页保命项：单页上限
 // 🔴 时间线渐进显示：首屏 5 条，逐步 +5 直到 20，之后每页 TL_PAGE()（避免一次灌太多卡顿）
@@ -28,10 +28,12 @@ let tagCat = null, gzSub = null;          // 当前分类 / 当前关注子模�
 // 🔴 标签为**系统预设常量**（不可增删改名）：直接从 seed 常量取，不再读库表 —— 库里那份是历史残留，不作数据源
 let libTags = TAGS_SEED.map(t => ({ ...t }));
 let form = { stu: null, tags: new Set(), imgs: [], date: '' };
-let editingId = null;
 let allNames = [];                        // 全班姓名（含已转出）：评语「他人姓名」实时提醒用
+let tlNameMap = null;                     // 时间线用的 id→姓名映射：进记录页时重建（mount 里清空），翻页不再全量重拉名单
 
-const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+// 🔴 口径唯一：本地日期串一律走 util.dateStr（class.js 的 todayInfo 也用同一份）。
+//    本文件原先自己手拼一份补零逻辑，class.js 又一份 —— 三处副本迟早漂移。
+const todayStr = dateStr;
 const ymPrefix = () => todayStr().slice(0, 8);
 const draftKey = () => 'bzr_draft_' + (state.currentSemesterId || 'x');
 const catColor = c => c === GUANZHU ? 'var(--danger)' : 'var(--primary-d)';
@@ -346,6 +348,11 @@ async function fetchPage(offset, limit) {
     return await db.growth_records.where('[del+date]')
       .between([0, pre + '01'], [0, pre + '32']).reverse().offset(offset).limit(limit).toArray();
   }
+  // 按月筛选（月份选择器）：同一条 [del+date] 索引，`-32` 作上界足够覆盖 31 天
+  if (/^\d{4}-\d{2}$/.test(tlFilter)) {
+    return await db.growth_records.where('[del+date]')
+      .between([0, tlFilter + '-01'], [0, tlFilter + '-32']).reverse().offset(offset).limit(limit).toArray();
+  }
   // 按分类名过滤（8 能力 / 关注）：🔴 [del+category+date] 复合索引分页
   return await listRecordsByCategoryPage(db, tlFilter, { offset, limit });
 }
@@ -393,8 +400,12 @@ async function renderTimeline(tl, append) {
   // 🔴 重新渲染前先回收上一批 blob URL（否则反复切筛选会持续累加，见 P1-5）
   if (!append) { revokeUrls(); tlOffset = 0; tl.innerHTML = '<div class="empty">加载中…</div>'; }
   const db = state.db;
-  const students = await listStudents(db, { includeOut: true });
-  const map = {}; students.forEach(s => map[s.id] = s.name);
+  // 🔴 姓名映射只在本页首次渲染时拉一次；「加载更多」/切筛选复用它（旧代码每翻一页都全量重拉名单）
+  if (!tlNameMap) {
+    const students = await listStudents(db, { includeOut: true });
+    tlNameMap = {}; students.forEach(s => tlNameMap[s.id] = s.name);
+  }
+  const map = tlNameMap;
   const page = await fetchPage(tlOffset, nextLimit(tlOffset));
   if (!append) {
     const any = await countActiveRecords(db);
@@ -439,6 +450,7 @@ function syncChips() {
 /* ================= 挂载 ================= */
 export async function mount(scrollEl) {
   revokeUrls();
+  tlNameMap = null;                       // 🔴 每次进记录页重建姓名映射（名单可能在数据页改过）
   const nmap = {};                        // 🔴 评语「他人姓名」提醒（含已转出，避免漏判）
   (await listStudents(state.db, { includeOut: true })).forEach(s => nmap[s.id] = s.name);
   allNames = Object.values(nmap).filter(Boolean);
@@ -454,6 +466,7 @@ export async function mount(scrollEl) {
       <div class="chips" id="tl-chips">
         ${['全部', ...WUYU, GUANZHU, '有图', '本月'].map(f =>
           `<span class="chip ${f === tlFilter ? 'on' : ''} ${f === GUANZHU ? 'gz' : ''}" data-f="${esc(f)}">${esc(f)}</span>`).join('')}
+        <input type="month" id="tl-month" class="tl-month" title="看历史月份" aria-label="按月份筛选时间线">
       </div>
       <div id="tl"></div>
       <div class="save-note">时间线分批加载，记录再多也流畅不卡顿。</div>
@@ -496,7 +509,7 @@ export async function mount(scrollEl) {
     t.textContent = form.date === todayStr() ? '今天' : form.date === yesterday() ? '昨天' : '补录 ' + form.date;
     saveDraft();
   };
-  const yesterday = () => { const d = new Date(Date.now() - 86400000); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+  const yesterday = () => dateStr(new Date(Date.now() - 86400000));
   scrollEl.querySelector('#q-today').onclick = () => { qDate.value = todayStr(); qDate.onchange(); };
   scrollEl.querySelector('#q-yest').onclick = () => { qDate.value = yesterday(); qDate.onchange(); };
 
@@ -599,7 +612,7 @@ export async function mount(scrollEl) {
       toast('已保存');
       saveBtn.disabled = false; saveBtn.textContent = '保存';
       await renderTags(scrollEl); renderImgs();
-      await refreshLists(stats);
+      await refreshLists();
     } catch (err) {
       saveBtn.disabled = false; saveBtn.textContent = '保存';
       const quota = String(err && err.name || '').includes('Quota') || String(err.message).includes('Quota');
@@ -621,13 +634,25 @@ export async function mount(scrollEl) {
 
   /* --- 时间线 --- */
   const tl = scrollEl.querySelector('#tl');
+  // 🔴 历史月份入口：以前只有「本月」，想看上个月得切到「全部」慢慢翻页。
+  //    月份选择器与 chips 并排（刻意不给它加 .chip 类 —— chips 的数量与选中态是既有约定）。
+  const tlMonth = scrollEl.querySelector('#tl-month');
+  if (tlMonth) {
+    tlMonth.value = /^\d{4}-\d{2}$/.test(tlFilter) ? tlFilter : '';
+    tlMonth.onchange = () => {
+      if (!tlMonth.value) return;                 // 清空月份 = 不动当前筛选（要回全部点 chip 即可）
+      tlFilter = tlMonth.value; syncChips(); renderTimeline(tl);
+    };
+  }
   scrollEl.querySelector('#tl-chips').onclick = e => {
     const c = e.target.closest('[data-f]'); if (!c) return;
-    tlFilter = c.dataset.f; syncChips(); renderTimeline(tl);
+    tlFilter = c.dataset.f;
+    if (tlMonth) tlMonth.value = '';              // 选了 chips 上的筛选 ⇒ 月份框不再挂着上一个月份
+    syncChips(); renderTimeline(tl);
   };
   tl.addEventListener('click', async e => {
     const act = e.target.closest('[data-act]');
-    if (act) { openRecordActions(act.dataset.act, () => refreshLists(stats)); return; }
+    if (act) { openRecordActions(act.dataset.act, () => refreshLists()); return; }
     const img = e.target.closest('[data-img]');
     if (img) {
       const r = await getRecord(state.db, img.dataset.id);
@@ -641,7 +666,8 @@ export async function mount(scrollEl) {
 }
 
 // 局部刷新：统计 + 时间线（不重建极速记录表单）
-async function refreshLists(oldStats) {
+// ⚠️ 别再加「上一次的 stats」这种参数：调用点传的全是同一份 mount 期快照，函数里也从没用过。
+async function refreshLists() {
   const s = await computeStats();
   const cards = document.querySelectorAll('.card');
   if (cards[1]) cards[1].outerHTML = statCard(s);
@@ -669,13 +695,27 @@ async function openRecordActions(id, onDone) {
   ]);
 }
 
+// 编辑记录：文字 / 标签 / 日期之外，**图片也能增删** —— 选错图不必整条删除重录。
+// 🔴 删旧图 / 放新图 / 改记录放**同一个事务**：任一步失败整体回滚（与新增记录同一口径）。
+//    不这么做就会出现「记录里还引用着已删的图」或「图已入库但记录没改」的半新状态。
 function openEdit(r, onDone) {
   const studentsP = listStudents(state.db, { includeOut: true });
   studentsP.then(async students => {
+    const db = state.db;
     const tags = new Set(r.tags || []);
     let stu = r.studentId;
+    // 现有图片取 blob 做预览：有 id = 库里已有的；没有 id = 这次新加的（保存时才分配 imageId）
+    const imgs = [];
+    for (let i = 0; i < (r.imageIds || []).length; i++) {
+      const blob = await getImageBlob(db, r.imageIds[i]);
+      imgs.push({ id: r.imageIds[i], blob, url: blob ? objUrl(blob) : '', desc: (r.imgDescs || [])[i] || '' });
+    }
+    const removedIds = new Set();
+    const isNew = im => !im.id;
     const p = openPicker({
       title: '编辑记录',
+      // 🔴 预览用的 blob URL 用完即回收（新增记录那边有 revokeUrls 管，这里弹层自己兜住）
+      onClose: () => { imgs.forEach(im => { if (im.url) URL.revokeObjectURL(im.url); }); },
       body: `
         <div style="padding:14px 16px">
           <div class="field"><label>学生</label><button class="student-pick sel" id="e-stu">${esc(students.find(s => s.id === stu)?.name || '?')}<span class="chg">更改</span></button></div>
@@ -687,8 +727,12 @@ function openEdit(r, onDone) {
               <div class="tags">${g.map(t => `<div class="tag ${tags.has(t.name) ? 'on' : ''}" data-n="${esc(t.name)}">${esc(t.name)}</div>`).join('')}</div>`;
           }).join('')}</div></div>
           <div class="field"><label>评语</label><textarea class="ta" id="e-text" rows="4">${esc(r.text || '')}</textarea></div>
-          ${(r.imageIds || []).length ? `<div class="field"><label>图片说明 <span class="muted" style="font-weight:400;font-size:11px">照片不进 AI，这段文字会</span></label>
-            ${(r.imageIds || []).map((_, i) => `<input class="imgdesc" data-edesc="${i}" value="${esc((r.imgDescs || [])[i] || '')}" placeholder="第 ${i + 1} 张的说明">`).join('')}</div>` : ''}
+          <div class="field"><label>图片 <span class="muted" style="font-weight:400;font-size:11px">可删选错的，也可补新图</span></label>
+            <div class="imgs" id="e-imgs"></div>
+            <input type="file" id="e-alb-in" accept="image/*" multiple style="display:none">
+            <div class="row" style="gap:8px"><button class="btn ghost tiny" id="e-addimg">🖼️ 添加图片</button><span class="muted" style="font-size:12px">共 <b id="e-imgn">0</b>/${MAX_IMG} 张</span></div>
+            <label class="pdok" id="e-pdok" style="display:none"><input type="checkbox" id="e-pdchk"><span>画面已确认：无人脸 · 无他人署名 · 背景无名单 / 座位表</span></label>
+          </div>
         </div>`,
       foot: `<button class="btn ghost" data-pclose>取消</button><button class="btn" id="e-save">保存修改</button>`
     });
@@ -701,15 +745,101 @@ function openEdit(r, onDone) {
       if (tags.has(t.dataset.n)) { tags.delete(t.dataset.n); t.classList.remove('on'); }
       else { tags.add(t.dataset.n); t.classList.add('on'); }
     };
-    p.foot.querySelector('#e-save').onclick = async () => {
-      const cat = [...tags].map(n => libTags.find(t => t.name === n)?.category).find(Boolean) || r.category;
-      const imgDescs = (r.imageIds || []).map((_, i) => (((p.body.querySelector('[data-edesc="' + i + '"]') || {}).value) || '').trim());
-      await state.db.growth_records.put({
-        ...r, studentId: stu, date: p.body.querySelector('#e-date').value || r.date,
-        tags: [...tags], category: cat, text: p.body.querySelector('#e-text').value.trim(),
-        imgDescs: imgDescs.length ? imgDescs : (r.imgDescs || []), updatedAt: Date.now()
+    // 把说明输入框里正在打的字收回 state（重画前必须先做，否则打了一半的字会被抹掉）
+    const flushDescs = () => {
+      p.body.querySelectorAll('[data-edesc]').forEach(inp => {
+        const im = imgs[+inp.dataset.edesc]; if (im) im.desc = inp.value;
       });
-      p.close(); toast('已更新'); onDone && onDone();
+    };
+    const drawImgs = () => {
+      const box = p.body.querySelector('#e-imgs');
+      box.innerHTML = imgs.map((im, i) =>
+        `<div class="img-cell"><div class="img-item" data-eview="${i}">`
+        + (im.url ? `<img src="${im.url}" alt="">` : '<span style="display:flex;width:100%;height:100%;align-items:center;justify-content:center;font-size:11px;color:var(--txt2)">图</span>')
+        + `<span class="rmx" data-erm="${i}" role="button" aria-label="删除这张图片" title="删除">&times;</span></div>`
+        + `<input class="imgdesc" data-edesc="${i}" value="${esc(im.desc || '')}" placeholder="这张的说明"></div>`).join('');
+      const n = p.body.querySelector('#e-imgn'); if (n) n.textContent = imgs.length;
+      // 🔴 「画面已确认」这道门只对**新加**的图有效：原有的图入库时已经确认过
+      const okBox = p.body.querySelector('#e-pdok');
+      const chk = p.body.querySelector('#e-pdchk');
+      if (okBox) okBox.style.display = imgs.some(isNew) ? '' : 'none';
+      if (chk && !imgs.some(isNew)) chk.checked = false;     // 新图都删了 → 要重新确认
+    };
+    drawImgs();
+    p.body.querySelector('#e-addimg').onclick = () => p.body.querySelector('#e-alb-in').click();
+    p.body.querySelector('#e-alb-in').onchange = async e => {
+      for (const f of Array.from(e.target.files)) {
+        if (imgs.length >= MAX_IMG) { toast(`最多 ${MAX_IMG} 张`); break; }
+        const blob = await compressImage(f);
+        imgs.push({ blob, url: objUrl(blob), desc: '' });
+      }
+      e.target.value = '';
+      drawImgs();
+    };
+    p.body.querySelector('#e-imgs').onclick = e => {
+      const rm = e.target.closest('[data-erm]');
+      if (rm) {
+        flushDescs();
+        const i = +rm.dataset.erm;
+        if (imgs[i].url) URL.revokeObjectURL(imgs[i].url);
+        if (imgs[i].id) removedIds.add(imgs[i].id);        // 旧图：保存时从图片池删掉
+        imgs.splice(i, 1);
+        drawImgs();
+        return;
+      }
+      const v = e.target.closest('[data-eview]');
+      if (v) {
+        const urls = imgs.map(x => x.url).filter(Boolean);
+        if (urls.length) lightbox(urls, +v.dataset.eview);
+      }
+    };
+    p.body.querySelector('#e-imgs').addEventListener('input', e => {
+      const d = e.target.closest('[data-edesc]'); if (!d) return;
+      const im = imgs[+d.dataset.edesc]; if (im) im.desc = d.value;
+    });
+    p.foot.querySelector('#e-save').onclick = async () => {
+      flushDescs();
+      // 🔴 新加的照片同样要过 photoGuard 这道门（与新增记录同一口径，不给编辑开后门）
+      if (imgs.some(isNew) && state.settings.photoGuard !== 'off') {
+        const chk = p.body.querySelector('#e-pdchk');
+        if (chk && !chk.checked) {
+          toast('新加的照片还没确认合规，请先勾选');
+          const box = p.body.querySelector('#e-pdok');
+          if (box) box.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          return;
+        }
+      }
+      // 🔴 分类推导：勾中的标签横跨多个分类时**优先保持原分类**（只要它还在勾选里），
+      //    否则按「8 能力 → 关注」的固定顺序取第一个 —— 旧版取 Set 的第一个命中项，
+      //    同一个分类集合能推出不同结果，看上去像随机。
+      const pickedCats = [...tags].map(n => (libTags.find(t => t.name === n) || {}).category).filter(Boolean);
+      const cat = pickedCats.includes(r.category)
+        ? r.category
+        : ([...WUYU, GUANZHU].find(c => pickedCats.includes(c)) || r.category);
+      const btn = p.foot.querySelector('#e-save');
+      btn.disabled = true;
+      try {
+        const imageIds = [], imgDescs = [];
+        await db.transaction('rw', db.images, db.growth_records, async () => {
+          for (const im of imgs) {
+            if (im.id) { imageIds.push(im.id); imgDescs.push((im.desc || '').trim()); continue; }
+            const imageId = 'img_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+            await putImage(db, imageId, im.blob);          // 🔴 新图先进库，失败则整体回滚
+            imageIds.push(imageId);
+            imgDescs.push((im.desc || '').trim());          // 🔴 说明与 imageIds 始终一一对齐
+          }
+          for (const id of removedIds) { try { await deleteImage(db, id); } catch (_) {} }
+          await db.growth_records.put({
+            ...r, studentId: stu, date: p.body.querySelector('#e-date').value || r.date,
+            tags: [...tags], category: cat, text: p.body.querySelector('#e-text').value.trim(),
+            imageIds, imgDescs, updatedAt: Date.now()
+          });
+        });
+        p.close(); toast('已更新'); onDone && onDone();
+      } catch (err) {
+        btn.disabled = false;
+        banner('errBanner', '⚠️ 保存失败：<b>未保存</b>，你填的内容仍在弹层里，可重试。');
+      }
     };
   });
 }

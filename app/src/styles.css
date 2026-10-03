@@ -133,6 +133,11 @@ textarea{width:100%;border:1px solid var(--line);border-radius:var(--r-s);paddin
 /* 关注分类 chip：醒目红，区分正向能力（绿） */
 .chip.gz{background:var(--danger-bg);color:var(--danger);border-color:#f3c6c6}
 .chip.gz.on{background:var(--danger);color:#fff}
+/* 时间线「历史月份」选择器：与 chips 并排，但**刻意不给它 .chip 类** ——
+   chips 行的元素数量与选中态是既有约定（测试按 .chip 计数），虚线框表示它是「另一个动作」。 */
+.tl-month{flex:none;padding:6px 10px;border:1px dashed var(--line);border-radius:16px;background:#fff;
+  color:var(--txt2);font:inherit;font-size:var(--fs-sm);cursor:pointer;outline:none;min-height:32px}
+.tl-month:focus{border-color:var(--primary);border-style:solid}
 /* 「编辑这节课」统一弹层里的小节标题（科目 / 教师） */
 .pk-lb{display:block;font-size:var(--fs-sm);color:var(--txt2);margin:0 0 2px;font-weight:600}
 /* 自定义科目 / 教师：＋ 后展开的内联输入行（避免依赖浏览器原生 prompt） */
