@@ -161,12 +161,15 @@ function todayListHTML(sched) {
     if (schedMode === 'mine') {
       // 我的课表：单张自填表，单元格 = {subject, cls}；空格=该节无课
       const cell = (sched.mine?.weekly?.[dayIdx]?.[periods.indexOf(p)]) || null;
-      if (!cell || !cell.subject) return '';
+      // 🔴 辅导 / 大课间这类非正课节次只填「值守班级」（没有科目）—— 与周课表里那半边一致
+      const mineRo = ro;
+      const mineMain = mineRo ? (cell?.cls || '') : (cell?.subject || '');
+      if (!mineMain) return '';
       return `<div class="sch-row ${now ? 'now' : ''}">
         <div class="sch-p ${b.cls} ${now ? 'now' : ''}">${esc(b.txt)}</div>
         ${timeCellHTML(periodTime(p))}
-        <div class="sch-s">${esc(cell.subject)}${cell.cls ? `<span class="sch-cls">${esc(cell.cls)}</span>` : ''}</div>
-        <span class="sch-mine">我的课</span>
+        <div class="sch-s">${esc(mineMain)}${!mineRo && cell?.cls ? `<span class="sch-cls">${esc(cell.cls)}</span>` : ''}</div>
+        <span class="sch-mine">${mineRo ? '值守' : '我的课'}</span>
       </div>`;
     }
     // 本班课表（班主任单一固定班，无班级选择）；分单双周时按当前周奇偶取对应课表
@@ -431,19 +434,22 @@ function openWeek(db, sched, rerender) {
 
 /* ================= ②-b 我的课表（单张自填表：每格 = 科目 + 班级） ================= */
 // 🔴 与 cellPicker 同款：自定义科目 / 新班级一律**内联输入**，不用浏览器原生 prompt（预览面板会被拦）
-function openMineCell(cur, sched, onPick, save) {
+// 🔴 classOnly（辅导 / 大课间这类非正课节次）：**只填值守班级、没有科目** —— 早辅导「带三年三班」这类
+//    本身就只有一个「去哪个班」的信息，塞个「科目」反而要老师瞎选一个。
+function openMineCell(cur, sched, onPick, save, { classOnly = false } = {}) {
   const all = allSubjects(sched);
   const classList = () => sched.teachClasses || [];
   const p = openPicker({
-    title: '填写本节课',
+    title: classOnly ? '填写值守班级' : '填写本节课',
+    lead: classOnly ? '这类节次不排科目，只填<b>你去值守的班级</b>。' : '',
     body: `<div style="padding:12px 14px">
-      <label class="pk-lb">科目</label>
+      ${classOnly ? '' : `<label class="pk-lb">科目</label>
       <div class="chips" id="mc-subs">${subjectChipsHTML(all, cur?.subject)}</div>
       <div class="pk-add" id="mc-subadd" hidden>
         <input class="ta" id="mc-subin" placeholder="新科目名称（如：心理 / 校本 / 写字）" autocomplete="off">
         <button class="btn tiny" id="mc-subgo">添加</button>
-      </div>
-      <label class="pk-lb" style="margin-top:14px;display:block">班级</label>
+      </div>`}
+      <label class="pk-lb"${classOnly ? '' : ' style="margin-top:14px;display:block"'}>班级</label>
       <div class="chips" id="mc-cls">${classList().length
         ? classList().map(c => `<span class="chip ${cur?.cls === c.name ? 'on' : ''}" data-c="${esc(c.name)}">${esc(c.name)}</span>`).join('')
         : '<span class="muted">请先在「授课班级」添加班级</span>'}
@@ -457,6 +463,7 @@ function openMineCell(cur, sched, onPick, save) {
   });
   let subject = cur?.subject || '';
   let cls = cur?.cls || '';
+  // classOnly 时整块科目区不存在，下面这些引用都得容错
   let subBox = p.body.querySelector('#mc-subs');   // let：删自定义科目后整块重画
   const clsBox = p.body.querySelector('#mc-cls');
   const subAdd = p.body.querySelector('#mc-subadd');
@@ -485,8 +492,9 @@ function openMineCell(cur, sched, onPick, save) {
     const c = e.target.closest('[data-s]');
     if (c) { subject = c.dataset.s; subBox.querySelectorAll('.chip').forEach(x => x.classList.toggle('on', x.dataset.s === subject)); }
   };
-  subBox.onclick = onSubClick;
-  {
+  // 🔴 classOnly：科目区整块不存在 ⇒ 下面这些绑定全部跳过（否则 null.onclick 直接抛错）
+  if (subBox) subBox.onclick = onSubClick;
+  if (!classOnly) {
     const inp = p.body.querySelector('#mc-subin');
     const commit = () => {
       const nm = addCustomSubject(sched, save, inp.value);
@@ -517,7 +525,8 @@ function openMineCell(cur, sched, onPick, save) {
     inp.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); commit(); } };
   }
   p.foot.querySelector('#mc-ok').onclick = () => {
-    onPick(subject ? { subject, cls } : null);
+    // 值守格：只有班级（subject 留空）；正课：没科目就当这节没我的课
+    onPick(classOnly ? (cls ? { subject: '', cls } : null) : (subject ? { subject, cls } : null));
     p.close();
   };
 }
@@ -529,7 +538,7 @@ function openMine(db, sched, rerender) {
   const save = () => saveSchedule(db, sched);
   const body = `
     <div style="padding:12px 14px">
-      <div class="muted" style="margin:0 0 8px">空格子 = 该节没课；点格子填<b>科目</b>和<b>班级</b>。</div>
+      <div class="muted" style="margin:0 0 8px">空格子 = 该节没课；点格子填<b>科目</b>和<b>班级</b>。辅导 / 大课间只填<b>值守班级</b>。</div>
       <table class="week">
         <tr><th style="width:52px">节次</th>${DAYS.map(d => `<th>${d}</th>`).join('')}</tr>
         ${periods.map((p, pi) => {
@@ -537,15 +546,20 @@ function openMine(db, sched, rerender) {
           return `<tr>
             <td class="pn">${esc(p.name)}</td>
             ${DAYS.map((_, di) => {
-              if (ro) return `<td class="ro ${p.type === 'tutor' ? 'tu' : ''}">${esc(p.name)}</td>`;
               const c = weekly[di] ? (weekly[di][pi] || null) : null;
+              // 🔴 辅导 / 大课间：不再是一格死文字，改成可点的值守格（老师 2026-10-09：
+              //    「我的课表里早辅导和中辅导也要能填班级」）。显示与周课表那半边同色系（tu / br 底色）。
+              if (ro) {
+                const txt = c?.cls ? c.cls : '＋班级';
+                return `<td><div class="cell ro-edit ${p.type === 'tutor' ? 'tu' : 'br'} ${c?.cls ? '' : 'none'}" data-p="${pi}" data-d="${di}" data-ro="1">${esc(txt)}</div></td>`;
+              }
               const txt = c?.subject ? `${c.subject}${c.cls ? '·' + c.cls : ''}` : '＋';
               return `<td><div class="cell ${c?.subject ? '' : 'none'}" data-p="${pi}" data-d="${di}">${esc(txt)}</div></td>`;
             }).join('')}
           </tr>`;
         }).join('')}
       </table>
-      <div class="save-note">空格=无课；点格子填科目与班级。</div>
+      <div class="save-note">空格=无课；点格子填科目与班级。辅导 / 大课间点格子填值守班级。</div>
     </div>`;
   const p = openPicker({ title: '我的课表', body, foot: `<button class="btn ghost" data-pclose>关闭</button><button class="btn" id="mk-save">保存课表</button>` });
   p.body.querySelector('.week').addEventListener('click', e => {
@@ -555,9 +569,14 @@ function openMine(db, sched, rerender) {
     openMineCell(cur, sched, val => {
       weekly[di] = weekly[di] || [];
       weekly[di][pi] = val;
+      if (cell.dataset.ro) {                                  // 值守格：显示班级，空格提示也跟着换
+        cell.textContent = val?.cls || '＋班级';
+        cell.classList.toggle('none', !val?.cls);
+        return;
+      }
       cell.textContent = val?.subject ? `${val.subject}${val.cls ? '·' + val.cls : ''}` : '＋';
       cell.classList.toggle('none', !val?.subject);
-    }, save);
+    }, save, { classOnly: cell.dataset.ro === '1' });
   });
   p.foot.querySelector('#mk-save').onclick = async () => {
     sched.mine = { weekly };

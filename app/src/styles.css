@@ -294,6 +294,10 @@ textarea{width:100%;border:1px solid var(--line);border-radius:var(--r-s);paddin
 .week td .cell .cl-t{font-size:10px;color:var(--txt3);line-height:1.1;margin-top:1px}
 .week td .cell.ro{color:var(--txt3);font-size:11px}
 .week td .cell.ro.tu{color:#b7791f}
+.week td .cell.ro-edit{cursor:pointer}
+.week td .cell.ro-edit:active{background:#f4f6f4}
+.week td .cell.ro-edit.tu{color:#b7791f}
+.week td .cell.ro-edit.br{color:var(--txt3)}
 .week .pn{color:var(--txt3);font-size:11px;background:#f7f9f7}
 
 /* 归档档案柜行 */
