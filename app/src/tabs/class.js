@@ -1,7 +1,7 @@
 // 班务 Tab：① 今日课表 ② 周课表 ③ 作息时间表 ④ 收缴（建单 + 点名，无催缴）
 // V11.1：收缴 = collections（临时态，不进备份）；课表 / 收缴功能保留（本版变更 #16）
 // 课表模型：本班课表 homeroom（班主任只负责一个班，单一固定，无班级选择）+ 我的课表 mine（跨班自填，每格 {subject,cls}）+ 授课班级 teachClasses（跨班任教）+ 自定义科目 customSubjects
-import { state } from '../state.js';
+import { state, saveSetting } from '../state.js';
 import { listStudents, listCollections, putCollection, deleteCollection, getSchedule, saveSchedule } from '../db/semester.js';
 import { esc, toast, openPicker, emptyState, confirm, onSeg, filterStudents, afterBack } from '../ui.js';
 import { dateStr } from '../util.js';
@@ -11,6 +11,9 @@ import { openPeriodsImport } from './data.js';
 const DAYS = ['周一', '周二', '周三', '周四', '周五'];
 const SUBJECTS = ['语文', '数学', '英语', '科学', '体育', '音乐', '美术', '信息', '劳动', '阅读', '班会', '自习', ''];
 
+// 🔴 这两个视图开关**必须落库**（state.settings）：以前只是模块级变量，刷新 / 重开应用就复位 ——
+//    老师点了「冬季作息」或「我的课表」，一刷新又跳回夏季 / 本班课表（2026-10-13 老师实测）。
+//    每次进班务页都从 settings 重新读一次（mount 里），所以切 Tab 回来也保持一致。
 let schedMode = 'class';      // class | mine
 let season = 'summer';        // summer | winter
 function todayInfo() {
@@ -677,7 +680,8 @@ function norm(defs) {
 
 function openSched(db, sched, rerender) {
   let defs = norm(sched?.periods || []);
-  let seasonTab = 'summer';
+  // 🔴 沿用卡片上当前选的季节：卡片停在冬季、弹层却开在夏季 ⇒ 改时间改错了季节（同一份作息的两种视角）
+  let seasonTab = season;
   // 🔴 分两栏（① 节次结构 / ② 作息时间），默认直接落在「作息时间」：
   //    两栏原本上下叠成整页，手机上要滚很久；键盘弹出又盖住页面下半屏，
   //    最下面那些时间输入框连看都看不到 → 老师当成「点了 / 打了没反应」。
@@ -931,6 +935,9 @@ function openRoll(coll, db, rerender) {
 /* ================= 挂载 ================= */
 export async function mount(scrollEl) {
   const db = state.db;
+  // 🔴 进页先按「上次选的」恢复视图：夏/冬作息、本班/我的课表（老师 2026-10-13 反馈刷新后复位）
+  season = state.settings.classSeason === 'winter' ? 'winter' : 'summer';
+  schedMode = state.settings.classMode === 'mine' ? 'mine' : 'class';
   const students = await listStudents(db);
   let sched = await getSchedule(db);
   const rawSched = canon(sched);
@@ -955,8 +962,12 @@ export async function mount(scrollEl) {
   };
 
   function bind() {
-    onSeg(scrollEl.querySelector('#cl-season'), v => { season = v; const tb = document.getElementById('cl-today'); if (tb) tb.innerHTML = todayListHTML(sched); });
-    onSeg(scrollEl.querySelector('#cl-mode'), v => { schedMode = v; render(); });
+    // 🔴 切换即落库（saveSetting 同步写内存 + meta 库）⇒ 刷新、重开应用、切 Tab 都保持
+    onSeg(scrollEl.querySelector('#cl-season'), v => {
+      season = v; saveSetting('classSeason', v);
+      const tb = document.getElementById('cl-today'); if (tb) tb.innerHTML = todayListHTML(sched);
+    });
+    onSeg(scrollEl.querySelector('#cl-mode'), v => { schedMode = v; saveSetting('classMode', v); render(); });
     const tcBtn = scrollEl.querySelector('#cl-classes');
     if (tcBtn) tcBtn.onclick = () => openTeachClasses(db, sched, render);
     scrollEl.querySelector('#cl-week').onclick = () => {

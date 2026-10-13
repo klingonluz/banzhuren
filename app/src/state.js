@@ -60,6 +60,10 @@ export async function loadSettings() {
   s.lastExport = await getSetting('lastExport', null);
   s.defaultCat = await getSetting('defaultCat', '能力感知力');
   s.classWeekSplit = await getSetting('classWeekSplit', 'off');
+  // 🔴 课表视图这两项以前**只存在内存里**（class.js 的模块级变量）⇒ 刷新 / 重开应用就回到默认
+  //    （老师 2026-10-13：「我点到冬季作息，但刷新后就回到了夏季」）。与 classWeekSplit 同样落库。
+  s.classSeason = await getSetting('classSeason', 'summer');
+  s.classMode = await getSetting('classMode', 'class');
   // 🔴 P0-3：这两项原先只写不读 ⇒ 重启后被静默重置。photoGuard 被重置会让老师手动关掉的
   //    「照片入库确认」又冒出来；aiDateGrain 被重置会让"日期保留完整"失效。
   s.photoGuard = await getSetting('photoGuard', 'on');
